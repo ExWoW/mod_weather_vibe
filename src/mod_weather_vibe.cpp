@@ -17,7 +17,11 @@
  * GLOBAL SETTINGS:
  *   WeatherVibe.Enable = 1/0
  *   WeatherVibe.Interval = <seconds>              // engine tick
- *   WeatherVibe.Transition.Smoothness = 0.0..1.0  // 0=instant, 1=smoothest
+ *
+ *   # Time (in seconds) to fade between weather patterns. 0 = instant
+ *   WeatherVibe.TransitionTime.Min = 60
+ *   WeatherVibe.TransitionTime.Max = 120
+ *
  *   WeatherVibe.Jitter.Zone.Min = <seconds>       // per-zone extra delay
  *   WeatherVibe.Jitter.Zone.Max = <seconds>
  *   WeatherVibe.Seasons = "auto"|"off"|"spring"|"summer"|"fall"|"winter"
@@ -28,8 +32,11 @@
  *   - Keeps a palette of patterns per zone; each application picks one pattern
  *     with season-adjusted weights and (optionally) transition bans.
  *   - On selection, choose a random intensity within [min,max] and a dwell time
- *     in [minMinutes,maxMinutes] plus per-zone jitter (sec). While dwelling,
- *     intensity eases toward the chosen target each tick (smoothing).
+ *     in [minMinutes,maxMinutes] plus per-zone jitter (sec).
+ *   - When switching patterns, the module cross-fades intensity from the old
+ *     grade to the new target grade over TransitionTime (random in Min..Max).
+ *     If the type changes (e.g., rain -> fine), we flip the type halfway
+ *     through the fade for a natural handoff.
  *   - When dwell elapses, a new pattern is picked (respecting bans).
  *   - On each tick, we only push to the core if type changed, or intensity
  *     changed meaningfully (> epsilon).
@@ -67,12 +74,8 @@ namespace
     static inline int TypeIndex(uint32 typeCode)
     {
         for (int i = 0; i < 5; ++i)
-        {
             if (kTypeCodes[i] == typeCode)
-            {
                 return i;
-            }
-        }
         return 0;
     }
 
@@ -99,10 +102,7 @@ namespace
         uint32 maxMin = 5;     // max minutes
         std::string desc;      // human readable description
 
-        bool enabled() const
-        {
-            return weight > 0.0f && mx >= mn + 0.00001f;
-        }
+        bool enabled() const { return weight > 0.0f && mx >= mn + 0.00001f; }
 
         float clamp(float v) const
         {
@@ -116,12 +116,8 @@ namespace
         bool empty() const
         {
             for (auto const& p : patterns)
-            {
                 if (p.enabled())
-                {
                     return false;
-                }
-            }
             return true;
         }
     };
@@ -129,21 +125,38 @@ namespace
     struct ZoneState
     {
         bool   inited = false;
+
+        // Currently displayed state
         uint32 typeCode = 0;
-        float  grade = 0.0f;               // current grade
-        float  targetGrade = 0.0f;         // target within current pattern range
-        int    patternIndex = -1;          // index into ZoneProfile.patterns
+        float  grade = 0.0f;
+
+        // Target within current pattern
+        float  targetGrade = 0.0f;
+        int    patternIndex = -1;
+
+        // Dwell control
         time_t dwellUntil = 0;             // epoch seconds when we can change pattern
         time_t nextTickEligible = 0;       // per-zone jitter gate (epoch seconds)
+
+        // --- Transition (time-based cross-fade) ---
+        bool   transitionActive = false;
+        time_t transitionStart = 0;       // epoch seconds
+        time_t transitionEnd = 0;       // epoch seconds
+        float  startGrade = 0.0f;    // grade at transition start
+        uint32 nextTypeCode = 0;       // type of the next pattern
+        bool   typeFlipPending = false;   // flip type once we reach 50% progress
     };
 
     // settings
     static bool   s_enable = true;
-    static uint32 s_interval = 120;      // seconds
-    static float  s_smoothness = 0.5f;   // [0..1]
-    static uint32 s_jitterMin = 1;       // seconds
-    static uint32 s_jitterMax = 5;       // seconds
+    static uint32 s_interval = 120;        // seconds
+    static uint32 s_jitterMin = 1;         // seconds
+    static uint32 s_jitterMax = 5;         // seconds
     static bool   s_debug = false;
+
+    // NEW: time-based transition
+    static uint32 s_transMinSec = 0;       // seconds
+    static uint32 s_transMaxSec = 0;       // seconds
 
     enum class SeasonMode { Off, Auto, Spring, Summer, Fall, Winter };
     static SeasonMode s_seasonMode = SeasonMode::Auto;
@@ -171,38 +184,19 @@ namespace
         return g;
     }
 
-    static inline float Clamp01(float v)
-    {
-        return std::min(std::max(v, 0.0f), 1.0f);
-    }
-
-    // Smoothing function (0 => jump, 1 => small steps)
-    static float SmoothToward(float current, float target)
-    {
-        float step = 1.0f - s_smoothness;   // 1 at smoothness=0, ~0 at smoothness=1
-        step = std::max(step, 0.05f);       // always make some progress
-        return current + (target - current) * step;
-    }
+    static inline float Clamp01(float v) { return std::min(std::max(v, 0.0f), 1.0f); }
 
     static float RandomIn(float a, float b)
     {
-        if (b < a)
-        {
-            std::swap(a, b);
-        }
-        return a + static_cast<float>(rand_norm()) * (b - a);
+        if (b < a) std::swap(a, b);
+        std::uniform_real_distribution<float> dist(a, b);
+        return dist(Rng());
     }
 
     static uint32 RandomInUInt(uint32 a, uint32 b)
     {
-        if (b < a)
-        {
-            std::swap(b, a);
-        }
-        if (a == b)
-        {
-            return a;
-        }
+        if (b < a) std::swap(b, a);
+        if (a == b) return a;
         std::uniform_int_distribution<uint32> D(a, b);
         return D(Rng());
     }
@@ -210,12 +204,8 @@ namespace
     static bool IsTransitionBanned(uint32 fromType, uint32 toType)
     {
         for (auto const& pr : s_bannedTransitions)
-        {
             if (pr.first == fromType && pr.second == toType)
-            {
                 return true;
-            }
-        }
         return false;
     }
 
@@ -226,10 +216,7 @@ namespace
         tm* g = std::gmtime(&now);
         int day = g ? (g->tm_yday + 1) : 1;
         int season = ((day - 78 + 365) / 91) % 4;
-        if (season < 0)
-        {
-            season += 4;
-        }
+        if (season < 0) season += 4;
         return season;
     }
 
@@ -237,12 +224,12 @@ namespace
     {
         switch (s_seasonMode)
         {
-        case SeasonMode::Off: { return -1; }
-        case SeasonMode::Auto: { return CurrentSeasonIndex(); }
-        case SeasonMode::Spring: { return 0; }
-        case SeasonMode::Summer: { return 1; }
-        case SeasonMode::Fall: { return 2; }
-        case SeasonMode::Winter: { return 3; }
+        case SeasonMode::Off:    return -1;
+        case SeasonMode::Auto:   return CurrentSeasonIndex();
+        case SeasonMode::Spring: return 0;
+        case SeasonMode::Summer: return 1;
+        case SeasonMode::Fall:   return 2;
+        case SeasonMode::Winter: return 3;
         }
         return -1;
     }
@@ -250,59 +237,43 @@ namespace
     static float SeasonAdjustedWeight(Pattern const& p)
     {
         int si = ResolveSeasonIndex();
-        if (si < 0)
-        {
-            return p.weight;
-        }
+        if (si < 0) return p.weight;
+
         int ti = TypeIndex(p.type);
         float mul = kSeasonMul[si][ti];
-        if (p.weight <= 0.0f)
-        {
-            return 0.0f;
-        }
+        if (p.weight <= 0.0f) return 0.0f;
+
         float w = p.weight * mul;
         return w < 0.0f ? 0.0f : w;
     }
 
-    // Broadcast a zone text when debug is enabled.
-    static void DebugBroadcast(uint32 zoneId, Pattern const& pat, float grade, uint32 dwellSec)
-    {
-        if (!s_debug)
-        {
-            return;
-        }
-
-        char buf[512];
-        std::snprintf(buf, sizeof(buf),
-            "[WeatherVibe] Zone %u: %s — %s (grade %.2f, ~%um)",
-            zoneId, TypeName(pat.type), pat.desc.c_str(), grade, (unsigned)(dwellSec / 60));
-
-        // Use WorldSessionMgr (not World) for zone text
-        WorldSessionMgr::Instance()->SendZoneText(zoneId, buf);
-
-        LOG_INFO("weather", "{}", buf);
-    }
-
     // Ensure Weather object exists for a zone
-    static Weather* EnsureZoneWeather(uint32 zoneId)
+    static Weather* GetZoneWeather(uint32 zoneId)
     {
         if (Weather* w = WeatherMgr::FindWeather(zoneId))
-        {
             return w;
-        }
         if (WeatherMgr::AddWeather(zoneId))
-        {
             return WeatherMgr::FindWeather(zoneId);
-        }
         return nullptr;
     }
 
-    // Push (type,grade) to core
+    // Push (type,grade) to core + DEBUG BROADCAST HERE
     static void PushToCore(uint32 zoneId, uint32 typeCode, float grade)
     {
-        if (Weather* w = EnsureZoneWeather(zoneId))
+        if (Weather* w = GetZoneWeather(zoneId))
         {
-            w->SetWeather(static_cast<WeatherType>(typeCode), Clamp01(grade));
+            float g = Clamp01(grade);
+            w->SetWeather(static_cast<WeatherType>(typeCode), g);
+
+            if (s_debug)
+            {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                    "[WeatherVibe] Zone %u update → %s (grade %.2f)",
+                    zoneId, TypeName(typeCode), g);
+                WorldSessionMgr::Instance()->SendZoneText(zoneId, buf);
+                LOG_INFO("weather", "{}", buf);
+            }
         }
     }
 
@@ -316,9 +287,7 @@ namespace
         {
             float w = p.enabled() ? SeasonAdjustedWeight(p) : 0.0f;
             if (w > 0.0f && IsTransitionBanned(fromType, p.type))
-            {
                 w = 0.0f;
-            }
             eff.push_back(w);
             total += w;
         }
@@ -334,9 +303,7 @@ namespace
                 total += w;
             }
             if (total <= 0.0001f)
-            {
                 return -1;
-            }
         }
 
         std::uniform_real_distribution<float> U(0.f, total);
@@ -346,49 +313,34 @@ namespace
         {
             acc += eff[i];
             if (r <= acc)
-            {
                 return static_cast<int>(i);
-            }
         }
         // Shouldn't get here, but just in case:
         for (int i = static_cast<int>(eff.size()) - 1; i >= 0; --i)
-        {
             if (eff[i] > 0.0f)
-            {
                 return i;
-            }
-        }
+
         return -1;
     }
 
     static uint32 RandomJitterSec()
     {
         if (s_jitterMax < s_jitterMin)
-        {
             std::swap(s_jitterMax, s_jitterMin);
-        }
         return RandomInUInt(s_jitterMin, s_jitterMax);
     }
 
-    static void StartPattern(uint32 zoneId, ZoneProfile const& Z, ZoneState& S, int patIndex, bool announce)
+    static void StartPattern(uint32 zoneId, ZoneProfile const& Z, ZoneState& S, int patIndex)
     {
         if (patIndex < 0 || patIndex >= static_cast<int>(Z.patterns.size()))
-        {
             return;
-        }
 
         Pattern const& P = Z.patterns[patIndex];
 
         S.patternIndex = patIndex;
-        S.typeCode = P.type;
 
-        // Choose a target grade in range; keep current grade if already within for smoother feel
+        // Choose a target grade in range
         float target = RandomIn(P.mn, P.mx);
-        if (!S.inited || S.grade < P.mn - 1e-4f || S.grade > P.mx + 1e-4f)
-        {
-            S.grade = P.clamp(target); // snap on first time or when switching type range
-        }
-        S.targetGrade = target;
 
         uint32 dwellMin = std::max<uint32>(1, P.minMin);
         uint32 dwellMax = std::max<uint32>(dwellMin, P.maxMin);
@@ -400,14 +352,47 @@ namespace
         S.dwellUntil = now + dwellSec;
         S.nextTickEligible = now + RandomJitterSec();
 
-        PushToCore(zoneId, S.typeCode, S.grade);
+        // --- Transition setup (time-based) ---
+        uint32 transMin = s_transMinSec;
+        uint32 transMax = s_transMaxSec;
+        if (transMax < transMin) std::swap(transMax, transMin);
+        uint32 transDur = RandomInUInt(transMin, transMax);
 
-        if (announce)
+        if (!S.inited)
         {
-            DebugBroadcast(zoneId, P, S.grade, dwellSec);
+            // First-time bootstrap: snap to the selected pattern
+            S.typeCode = P.type;
+            S.grade = P.clamp(target);
+            S.targetGrade = S.grade;
+            S.transitionActive = false;
+            S.typeFlipPending = false;
+            S.inited = true;
+            PushToCore(zoneId, S.typeCode, S.grade);
         }
+        else
+        {
+            // Prepare cross-fade from current to new target
+            S.startGrade = S.grade;
+            S.targetGrade = P.clamp(target);
+            S.nextTypeCode = P.type;
+            S.typeFlipPending = (S.nextTypeCode != S.typeCode);
 
-        S.inited = true;
+            if (transDur == 0)
+            {
+                // Instant
+                S.grade = S.targetGrade;
+                S.typeCode = S.nextTypeCode;
+                S.transitionActive = false;
+                S.typeFlipPending = false;
+                PushToCore(zoneId, S.typeCode, S.grade);
+            }
+            else
+            {
+                S.transitionStart = now;
+                S.transitionEnd = now + transDur;
+                S.transitionActive = true;
+            }
+        }
     }
 
     static bool ShouldTickZone(ZoneState const& S, time_t now)
@@ -420,62 +405,79 @@ namespace
         S.nextTickEligible = now + RandomJitterSec();
     }
 
-    // Per-tick evolution: ease grade toward target; when dwell expires, pick new pattern
+    // Per-tick evolution: handle transition fade; when dwell expires, pick new pattern
     static void StepZone(uint32 zoneId, ZoneProfile const& Z, ZoneState& S)
     {
         if (Z.empty())
-        {
             return;
-        }
 
         time_t now = GameTime::GetGameTime().count();
         if (!ShouldTickZone(S, now))
-        {
             return;
-        }
 
         BumpNextTick(S, now);
 
         if (!S.inited)
         {
             int pi = PickPattern(zoneId, Z, /*fromType*/ 0);
-            StartPattern(zoneId, Z, S, pi, /*announce*/ true);
+            StartPattern(zoneId, Z, S, pi);
             return;
         }
 
-        // While dwelling: slide toward target
         float oldGrade = S.grade;
+        uint32 oldType = S.typeCode;
 
-        if (now < S.dwellUntil && S.patternIndex >= 0 && S.patternIndex < static_cast<int>(Z.patterns.size()))
+        // Handle active transition fade
+        if (S.transitionActive)
         {
-            Pattern const& P = Z.patterns[S.patternIndex];
+            // Compute progress in [0..1]
+            double total = std::max<time_t>(1, S.transitionEnd - S.transitionStart);
+            double done = std::clamp<double>(now - S.transitionStart, 0, total);
+            float  t = static_cast<float>(done / total);
 
-            // only adjust grade; type fixed within dwell
-            S.grade = SmoothToward(S.grade, P.clamp(S.targetGrade));
+            // Lerp grade
+            S.grade = S.startGrade + (S.targetGrade - S.startGrade) * t;
 
-            // Re-push only if meaningful intensity delta (avoid packet spam)
-            if (std::fabs(S.grade - oldGrade) > 0.005f)
+            // Flip type at halfway point if pending
+            if (S.typeFlipPending && t >= 0.5f)
             {
-                PushToCore(zoneId, S.typeCode, S.grade);
+                S.typeCode = S.nextTypeCode;
+                S.typeFlipPending = false;
             }
 
+            // End of transition
+            if (now >= S.transitionEnd)
+            {
+                S.grade = S.targetGrade;
+                S.typeCode = S.nextTypeCode;
+                S.transitionActive = false;
+                S.typeFlipPending = false;
+            }
+
+            // Push if meaningful change
+            if (std::fabs(S.grade - oldGrade) > 0.005f || S.typeCode != oldType)
+                PushToCore(zoneId, S.typeCode, S.grade);
+
+            return;
+        }
+
+        // If still within dwell, nothing to change
+        if (now < S.dwellUntil && S.patternIndex >= 0 && S.patternIndex < static_cast<int>(Z.patterns.size()))
+        {
+            // No-op (grade stays at target during dwell)
             return;
         }
 
         // Dwell elapsed: pick new pattern (respect bans)
         int next = PickPattern(zoneId, Z, /*fromType*/ S.typeCode);
         if (next < 0)
-        {
             next = S.patternIndex; // fallback to previous
-        }
 
-        StartPattern(zoneId, Z, S, next, /*announce*/ true);
+        StartPattern(zoneId, Z, S, next);
 
-        // If small delta, still push once
-        if (std::fabs(S.grade - oldGrade) <= 0.005f)
-        {
+        // If we snapped instantly just now, ensure a push occurred:
+        if (!S.transitionActive && (std::fabs(S.grade - oldGrade) > 0.005f || S.typeCode != oldType))
             PushToCore(zoneId, S.typeCode, S.grade);
-        }
     }
 
     // --- CONFIG LOADING ---
@@ -485,30 +487,12 @@ namespace
     static SeasonMode ParseSeasonMode(std::string s)
     {
         std::transform(s.begin(), s.end(), s.begin(), ToLower);
-        if (s == "off")
-        {
-            return SeasonMode::Off;
-        }
-        if (s == "auto")
-        {
-            return SeasonMode::Auto;
-        }
-        if (s == "spring")
-        {
-            return SeasonMode::Spring;
-        }
-        if (s == "summer")
-        {
-            return SeasonMode::Summer;
-        }
-        if (s == "fall")
-        {
-            return SeasonMode::Fall;
-        }
-        if (s == "winter")
-        {
-            return SeasonMode::Winter;
-        }
+        if (s == "off")    return SeasonMode::Off;
+        if (s == "auto")   return SeasonMode::Auto;
+        if (s == "spring") return SeasonMode::Spring;
+        if (s == "summer") return SeasonMode::Summer;
+        if (s == "fall")   return SeasonMode::Fall;
+        if (s == "winter") return SeasonMode::Winter;
         return SeasonMode::Auto;
     }
 
@@ -529,15 +513,9 @@ namespace
     static std::string ExtractQuoted(std::string const& s)
     {
         size_t first = s.find('"');
-        if (first == std::string::npos)
-        {
-            return {};
-        }
+        if (first == std::string::npos) return {};
         size_t last = s.find_last_of('"');
-        if (last == std::string::npos || last <= first)
-        {
-            return {};
-        }
+        if (last == std::string::npos || last <= first) return {};
         return s.substr(first + 1, last - first - 1);
     }
 
@@ -576,9 +554,7 @@ namespace
 
         int n = std::sscanf(val.c_str(), " %d , %f , %f , %f , %u , %u ", &itype, &w, &mn, &mx, &minMin, &maxMin);
         if (n < 4)
-        {
             return false;
-        }
         if (n == 4)
         {
             minMin = 1;
@@ -589,10 +565,7 @@ namespace
         out.weight = std::max(0.0f, w);
         out.mn = Clamp01(mn);
         out.mx = Clamp01(mx);
-        if (out.mx < out.mn)
-        {
-            std::swap(out.mx, out.mn);
-        }
+        if (out.mx < out.mn) std::swap(out.mx, out.mn);
         out.minMin = std::max<uint32>(1, minMin);
         out.maxMin = std::max<uint32>(out.minMin, maxMin);
         out.desc = desc;
@@ -603,7 +576,11 @@ namespace
     {
         s_enable = sConfigMgr->GetOption<bool>("WeatherVibe.Enable", true);
         s_interval = sConfigMgr->GetOption<uint32>("WeatherVibe.Interval", 120u);
-        s_smoothness = Clamp01(sConfigMgr->GetOption<float>("WeatherVibe.Transition.Smoothness", 0.50f));
+
+        // NEW: transition time (seconds)
+        s_transMinSec = sConfigMgr->GetOption<uint32>("WeatherVibe.TransitionTime.Min", 0u);
+        s_transMaxSec = sConfigMgr->GetOption<uint32>("WeatherVibe.TransitionTime.Max", 0u);
+
         s_jitterMin = sConfigMgr->GetOption<uint32>("WeatherVibe.Jitter.Zone.Min", 1u);
         s_jitterMax = sConfigMgr->GetOption<uint32>("WeatherVibe.Jitter.Zone.Max", 5u);
         s_debug = sConfigMgr->GetOption<bool>("WeatherVibe.Debug", false);
@@ -616,14 +593,10 @@ namespace
         {
             std::string val = sConfigMgr->GetOption<std::string>(key, "");
             if (val.empty())
-            {
                 continue;
-            }
             uint32 a, b;
             if (ParseNotAllowed(val, a, b))
-            {
                 s_bannedTransitions.emplace_back(a, b);
-            }
         }
 
         // Zone patterns
@@ -634,9 +607,7 @@ namespace
         for (auto const& key : keys)
         {
             if (key.rfind(prefix, 0) != 0)
-            {
                 continue;
-            }
 
             // Expect "WeatherVibe.Zone.<zoneId>[i]"
             size_t posAfterPrefix = prefix.size();
@@ -645,50 +616,38 @@ namespace
             size_t lb = key.find('[', posAfterPrefix);
             size_t rb = (lb != std::string::npos) ? key.find(']', lb) : std::string::npos;
             if (lb == std::string::npos || rb == std::string::npos || rb <= lb + 1)
-            {
                 continue;
-            }
 
             // The zone id is the digits between prefix and '['
             std::string zoneStr = key.substr(posAfterPrefix, lb - posAfterPrefix);
             if (zoneStr.empty() || !std::all_of(zoneStr.begin(), zoneStr.end(), [](unsigned char c) { return std::isdigit(c); }))
-            {
                 continue;
-            }
 
             // index is inside [ ... ]
             std::string idxStr = key.substr(lb + 1, rb - lb - 1);
             if (idxStr.empty() || !std::all_of(idxStr.begin(), idxStr.end(), [](unsigned char c) { return std::isdigit(c); }))
-            {
                 continue;
-            }
 
             uint32 zoneId = static_cast<uint32>(std::strtoul(zoneStr.c_str(), nullptr, 10));
             int    patIdx = static_cast<int>(std::strtoul(idxStr.c_str(), nullptr, 10));
 
             std::string val = sConfigMgr->GetOption<std::string>(key, "");
             if (val.empty())
-            {
                 continue;
-            }
 
             Pattern P;
             if (!ParsePatternArray(val, P))
-            {
                 continue;
-            }
 
             ZoneProfile& Z = s_zoneProfiles[zoneId];
             if (static_cast<int>(Z.patterns.size()) <= patIdx)
-            {
                 Z.patterns.resize(patIdx + 1);
-            }
             Z.patterns[patIdx] = P;
         }
 
         LOG_INFO("server.loading",
-            "[mod_weather_vibe] config loaded: {} zones (interval={}s, smoothness={}, jitter={}..{}s, seasonMode={}, debug={}).",
-            s_zoneProfiles.size(), s_interval, s_smoothness, s_jitterMin, s_jitterMax,
+            "[mod_weather_vibe] config loaded: {} zones (interval={}s, transition={}..{}s, jitter={}..{}s, seasonMode={}, debug={}).",
+            s_zoneProfiles.size(), s_interval, s_transMinSec, s_transMaxSec, s_jitterMin, s_jitterMax,
             (s_seasonMode == SeasonMode::Off ? "off" :
                 s_seasonMode == SeasonMode::Auto ? "auto" :
                 s_seasonMode == SeasonMode::Spring ? "spring" :
@@ -715,11 +674,11 @@ namespace
                 if (!Z.empty())
                 {
                     int pi = PickPattern(zoneId, Z, /*fromType*/ 0);
-                    StartPattern(zoneId, Z, S, pi, /*announce*/ true);
+                    StartPattern(zoneId, Z, S, pi);
                 }
             }
 
-            LOG_INFO("server.loading", "[mod_weather_vibe] initialized (array patterns + dwell + seasons + debug).");
+            LOG_INFO("server.loading", "[mod_weather_vibe] initialized (array patterns + dwell + season bias + timed transitions).");
         }
 
         void OnAfterConfigLoad(bool /*reload*/) override
@@ -731,15 +690,11 @@ namespace
         void OnUpdate(uint32 diff) override
         {
             if (!s_enable)
-            {
                 return;
-            }
 
             m_timer += diff;
             if (m_timer < s_interval * IN_MILLISECONDS)
-            {
                 return;
-            }
             m_timer = 0;
 
             // Tick each zone independently
@@ -748,9 +703,7 @@ namespace
                 uint32 zoneId = kv.first;
                 ZoneProfile const& Z = kv.second;
                 if (Z.empty())
-                {
                     continue;
-                }
 
                 ZoneState& S = s_zoneState[zoneId];
                 StepZone(zoneId, Z, S);

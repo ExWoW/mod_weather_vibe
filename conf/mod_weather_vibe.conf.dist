@@ -1,48 +1,5 @@
 ﻿#######################################################################
-#  mod_weather_vibe — GLOBAL environment weather controller (zone-wide)
-#
-#  PURPOSE
-#    Drive immersive, zone-themed weather using weighted “patterns” with
-#    per-pattern intensity ranges and dwell times, optional seasonal bias,
-#    desynchronization jitter, and debug broadcasts.
-#
-#  CONFIG ENTRY SHAPE (per-zone patterns)
-#    WeatherVibe.Zone.<ZoneId>[i] = [type, weight, minIntensity, maxIntensity, minMinutes, maxMinutes, "description"]
-#      - type:         0=fine, 1=rain, 2=snow, 3=storm (sand/ash/blizzard), 86=thunders
-#      - weight:       relative selection weight (0 disables this pattern)
-#      - min/maxIntensity: 0.00–1.00; choose bands intentionally (see below)
-#      - min/maxMinutes:   dwell time window for the pattern (minutes)
-#      - "description":    free text shown in debug broadcasts (quoted)
-#
-#  CORE WEATHER BANDS (AzerothCore mapping by intensity/grade)
-#      < 0.27    → FINE        (even if type ≠ fine; avoid such ranges for non-fine)
-#      0.27–0.39 → LIGHT
-#      0.40–0.69 → MEDIUM
-#      0.70–1.00 → HEAVY
-#    Note: THUNDERS (type=86) is a discrete state; grade is still sent to clients.
-#
-#  SEASONS
-#    WeatherVibe.Seasons = "auto" | "off" | "spring" | "summer" | "fall" | "winter"
-#      - "auto" follows core’s season calc; others force a season; "off" disables bias.
-#      - Seasonal bias reweights pattern selection; zero weights remain zero.
-#
-#  TRANSITIONS
-#    - Intensity eases toward a per-pattern target using Transition.Smoothness.
-#    - Prohibit abrupt swaps with Transition.NotAllowed rules, e.g. [2, 1] for snow→rain.
-#    - Per-zone jitter (seconds) staggers updates to avoid synchronized flips.
-#
-#  DEBUG
-#    - If WeatherVibe.Debug=1, each applied pattern is announced to players in-zone
-#      using the pattern’s "description" string.
-#
-#  EXAMPLE (single zone snippet)
-#    # Elwynn Forest — green & mild; passing showers
-#    WeatherVibe.Zone.12[0] = [0, 0.60, 0.05, 0.22, 2, 4, "fine — bright breaks"]
-#    WeatherVibe.Zone.12[1] = [0, 0.10, 0.15, 0.26, 1, 3, "fine — hazy/overcast window"]
-#    WeatherVibe.Zone.12[2] = [1, 0.18, 0.30, 0.55, 2, 5, "rain — showery light/med"]
-#    WeatherVibe.Zone.12[3] = [3, 0.08, 0.28, 0.60, 2, 4, "storm — gusty squalls"]
-#    WeatherVibe.Zone.12[4] = [86,0.04, 0.35, 0.70, 1, 2, "thunders — brief rumbles"]
-#
+#  mod_weather_vibe
 #######################################################################
 
 # mod toggle
@@ -50,12 +7,11 @@ WeatherVibe.Enable = 1
 
 # How often to evaluate weather evolution (seconds)
 # Should be smaller then the lowest minMinutes in zones configuration.
-WeatherVibe.Interval = 50
+WeatherVibe.Interval = 30
 
-# Intensity transition smoothing factor (0.0–1.0).
-# 0.0 = off (instant jumps), 1.0 = smoothest possible transitions.
-# Recommended default: 0.50
-WeatherVibe.Transition.Smoothness = 0.50
+# Time (in seconds) to fade between weather patterns. 0 = instant
+WeatherVibe.TransitionTime.Min = 30
+WeatherVibe.TransitionTime.Max = 90
 
 # One or more disallowed direct transitions
 # Example: disallow snow -> rain (helps avoid jarring swaps near freezing)
