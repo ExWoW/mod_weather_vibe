@@ -15,6 +15,7 @@ TODO:
 - Extending logic or eventually even adding dynamic weather models
 - Adding weather fronts moving through entire world
 - Adding and testing zones which are normally locked for weather changes
+- ~~Adding creating dynamic weather patterns between two defined weather patters.~~
 - [Optimize performance] do not update weather when there are no players/real players in the zone
 ```
 
@@ -273,6 +274,7 @@ If visuals don’t change:
 ## License
 
 This module is released under the **GNU AGPL v3**, consistent with AzerothCore.
+
 
 
 
