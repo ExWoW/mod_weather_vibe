@@ -1,6 +1,6 @@
-﻿# AzerothCore Module: Weather Vibe (**Work In Progess**)
+﻿# AzerothCore Module: Weather Vibe 
 
-
+(**Work In Progess**)
 
 
 Bring your world to life with **mod_weather_vibe**. This module gives each zone a
@@ -18,6 +18,10 @@ TODO:
 - Do not update when there are no players/real players in the zone (performance)
 - More testing
 ```
+
+You can enable all zones by running the scripts mentioned below, they are part of the default config but i havent 
+test them yet. There is enable script which adds the missing zones, and disable which deletes the zones we just
+added. The default zones are not touches in neither of the scripts.
 
 ## Enable weather for all zones
 
@@ -268,6 +272,7 @@ If visuals don’t change:
 ## License
 
 This module is released under the **GNU AGPL v3**, consistent with AzerothCore.
+
 
 
 
