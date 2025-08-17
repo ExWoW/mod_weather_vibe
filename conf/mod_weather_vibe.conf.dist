@@ -1,0 +1,647 @@
+﻿#######################################################################
+#  mod_weather_vibe — GLOBAL environment weather controller (zone-wide)
+#
+#  PURPOSE
+#    Drive immersive, zone-themed weather using weighted “patterns” with
+#    per-pattern intensity ranges and dwell times, optional seasonal bias,
+#    desynchronization jitter, and debug broadcasts.
+#
+#  CONFIG ENTRY SHAPE (per-zone patterns)
+#    WeatherVibe.Zone.<ZoneId>[i] = [type, weight, minIntensity, maxIntensity, minMinutes, maxMinutes, "description"]
+#      - type:         0=fine, 1=rain, 2=snow, 3=storm (sand/ash/blizzard), 86=thunders
+#      - weight:       relative selection weight (0 disables this pattern)
+#      - min/maxIntensity: 0.00–1.00; choose bands intentionally (see below)
+#      - min/maxMinutes:   dwell time window for the pattern (minutes)
+#      - "description":    free text shown in debug broadcasts (quoted)
+#
+#  CORE WEATHER BANDS (AzerothCore mapping by intensity/grade)
+#      < 0.27    → FINE        (even if type ≠ fine; avoid such ranges for non-fine)
+#      0.27–0.39 → LIGHT
+#      0.40–0.69 → MEDIUM
+#      0.70–1.00 → HEAVY
+#    Note: THUNDERS (type=86) is a discrete state; grade is still sent to clients.
+#
+#  SEASONS
+#    WeatherVibe.Seasons = "auto" | "off" | "spring" | "summer" | "fall" | "winter"
+#      - "auto" follows core’s season calc; others force a season; "off" disables bias.
+#      - Seasonal bias reweights pattern selection; zero weights remain zero.
+#
+#  TRANSITIONS
+#    - Intensity eases toward a per-pattern target using Transition.Smoothness.
+#    - Prohibit abrupt swaps with Transition.NotAllowed rules, e.g. [2, 1] for snow→rain.
+#    - Per-zone jitter (seconds) staggers updates to avoid synchronized flips.
+#
+#  DEBUG
+#    - If WeatherVibe.Debug=1, each applied pattern is announced to players in-zone
+#      using the pattern’s "description" string.
+#
+#  EXAMPLE (single zone snippet)
+#    # Elwynn Forest — green & mild; passing showers
+#    WeatherVibe.Zone.12[0] = [0, 0.60, 0.05, 0.22, 2, 4, "fine — bright breaks"]
+#    WeatherVibe.Zone.12[1] = [0, 0.10, 0.15, 0.26, 1, 3, "fine — hazy/overcast window"]
+#    WeatherVibe.Zone.12[2] = [1, 0.18, 0.30, 0.55, 2, 5, "rain — showery light/med"]
+#    WeatherVibe.Zone.12[3] = [3, 0.08, 0.28, 0.60, 2, 4, "storm — gusty squalls"]
+#    WeatherVibe.Zone.12[4] = [86,0.04, 0.35, 0.70, 1, 2, "thunders — brief rumbles"]
+#
+#######################################################################
+
+# mod toggle
+WeatherVibe.Enable = 1
+
+# How often to evaluate weather evolution (seconds)
+# Should be smaller then the lowest minMinutes in zones configuration.
+WeatherVibe.Interval = 50
+
+# Intensity transition smoothing factor (0.0–1.0).
+# 0.0 = off (instant jumps), 1.0 = smoothest possible transitions.
+# Recommended default: 0.50
+WeatherVibe.Transition.Smoothness = 0.50
+
+# One or more disallowed direct transitions
+# Example: disallow snow -> rain (helps avoid jarring swaps near freezing)
+WeatherVibe.Transition.NotAllowed[0] = [2, 1]
+
+# Interval per zone is randomized on every cycle (seconds).
+# Also prevents all zones changing at the same time.
+WeatherVibe.Jitter.Zone.Min = 1
+WeatherVibe.Jitter.Zone.Max = 5
+
+# Takes seasons into account for weather, recalculates the chance of
+# sun (fine), rain, snow, storm, thunder. Values:
+# "auto", "off", "spring", "summer", "fall", "winter"
+WeatherVibe.Seasons = "off"
+
+# When enabled (1), broadcast the applied weather pattern to all players,
+# using the per-entry description string appended below.
+WeatherVibe.Debug = 1
+
+
+##############################
+# Zones weather profiles
+#
+# type:
+#   0 = fine
+#   1 = rain
+#   2 = snow
+#   3 = storm (sand/ash/blizzard)
+#   86 = thunders
+#
+# intensity bands (AzerothCore Weather.cpp):
+#   < 0.27   → fine
+#   0.27–0.39 → light
+#   0.40–0.69 → medium
+#   0.70–1.00 → heavy
+#
+# minMinutes / maxMinutes:
+#   dwell time the effect lasts, in minutes (1–5 typical)
+#
+# Format:
+# WeatherVibe.Zone.<ZoneId>[i] = [type, weight, minIntensity, maxIntensity, minMinutes, maxMinutes, "description"]
+##############################
+
+
+--------------------------
+# NORTHREND (Map 571)
+--------------------------
+
+# Borean Tundra (3537)
+WeatherVibe.Zone.3537[0] = [0,   0.05, 0.00, 0.26, 2, 4, "fine — pale sun, shallow haze"]  # fine — pale sun, shallow haze (core: fine; keep <=0.26)
+WeatherVibe.Zone.3537[1] = [0,   0.04, 0.00, 0.26, 2, 3, "fine — bright cold spell"]       # fine — bright cold spell (core: fine)
+WeatherVibe.Zone.3537[2] = [2,   0.20, 0.27, 0.39, 2, 4, "snow — light flurries"]          # snow — light flurries (core-light)
+WeatherVibe.Zone.3537[3] = [2,   0.18, 0.40, 0.69, 3, 5, "snow — steady light/moderate"]   # snow — steady light/moderate (core-medium)
+WeatherVibe.Zone.3537[4] = [2,   0.14, 0.55, 0.69, 3, 5, "snow — moderate bands"]          # snow — moderate bands (core-medium upper)
+WeatherVibe.Zone.3537[5] = [2,   0.10, 0.70, 0.95, 3, 5, "snow — heavy snowfall"]          # snow — heavy snowfall (core-heavy)
+WeatherVibe.Zone.3537[6] = [2,   0.08, 0.85, 1.00, 2, 4, "snow — near-whiteout bursts"]    # snow — near-whiteout bursts (core-heavy)
+WeatherVibe.Zone.3537[7] = [3,   0.08, 0.40, 0.69, 3, 5, "storm — blowing snow, reduced vis"] # storm — blowing snow, reduced vis (core-medium)
+WeatherVibe.Zone.3537[8] = [3,   0.05, 0.70, 1.00, 4, 8, "storm — ground blizzard/whiteout"] # storm — ground blizzard/whiteout (core-heavy)
+WeatherVibe.Zone.3537[9] = [86,  0.02, 0.50, 0.95, 2, 3, "thunders — rare thundersnow"]    # thunders — rare thundersnow (discrete)
+
+# Howling Fjord (495)
+WeatherVibe.Zone.495[0] = [0,   0.04, 0.00, 0.26, 2, 4, "fine — coastal sun breaks"]       # fine — coastal sun breaks (core: fine)
+WeatherVibe.Zone.495[1] = [0,   0.03, 0.00, 0.26, 2, 4, "fine — overcast glow"]            # fine — overcast glow (core: fine)
+WeatherVibe.Zone.495[2] = [1,   0.06, 0.27, 0.39, 2, 4, "rain — cold drizzle"]             # rain — cold drizzle (core-light)
+WeatherVibe.Zone.495[3] = [1,   0.06, 0.40, 0.69, 3, 5, "rain — steady coastal rain"]      # rain — steady coastal rain (core-medium)
+WeatherVibe.Zone.495[4] = [2,   0.20, 0.27, 0.39, 3, 5, "snow — wet flakes"]               # snow — wet flakes (core-light)
+WeatherVibe.Zone.495[5] = [2,   0.18, 0.40, 0.69, 3, 5, "snow — moderate coastal snow"]    # snow — moderate coastal snow (core-medium)
+WeatherVibe.Zone.495[6] = [2,   0.14, 0.70, 0.95, 3, 5, "snow — heavy coastal snow"]       # snow — heavy coastal snow (core-heavy)
+WeatherVibe.Zone.495[7] = [3,   0.10, 0.40, 0.85, 3, 5, "storm — fjord squalls"]           # storm — fjord squalls (core-medium→heavy)
+WeatherVibe.Zone.495[8] = [3,   0.08, 0.70, 0.95, 2, 4, "storm — gale with sleet"]         # storm — gale with sleet (core-heavy)
+WeatherVibe.Zone.495[9] = [86,  0.04, 0.50, 0.95, 2, 4, "thunders — thunder-sleet cells"]  # thunders — thunder-sleet cells (discrete)
+
+# Dragonblight (65)
+WeatherVibe.Zone.65[0] = [0,   0.03, 0.00, 0.26, 2, 3, "fine — dim sun through cloud"]     # fine — dim sun through cloud (core: fine)
+WeatherVibe.Zone.65[1] = [0,   0.02, 0.00, 0.26, 2, 3, "fine — ice haze"]                  # fine — ice haze (core: fine)
+WeatherVibe.Zone.65[2] = [1,   0.04, 0.27, 0.39, 1, 2, "rain — freezing drizzle"]          # rain — freezing drizzle (core-light)
+WeatherVibe.Zone.65[3] = [2,   0.22, 0.27, 0.39, 2, 4, "snow — light flurries"]            # snow — light flurries (core-light)
+WeatherVibe.Zone.65[4] = [2,   0.18, 0.40, 0.69, 3, 5, "snow — steady light/moderate"]     # snow — steady light/moderate (core-medium)
+WeatherVibe.Zone.65[5] = [2,   0.14, 0.70, 0.90, 3, 5, "snow — moderate to heavy"]         # snow — moderate to heavy (core-heavy start)
+WeatherVibe.Zone.65[6] = [2,   0.10, 0.85, 1.00, 3, 5, "snow — heavy bursts"]              # snow — heavy bursts (core-heavy)
+WeatherVibe.Zone.65[7] = [3,   0.10, 0.40, 0.80, 3, 5, "storm — drifting/blowing snow"]    # storm — drifting/blowing snow (core-medium→heavy)
+WeatherVibe.Zone.65[8] = [3,   0.08, 0.70, 1.00, 4, 8, "storm — whiteout"]                 # storm — whiteout (core-heavy)
+WeatherVibe.Zone.65[9] = [86,  0.02, 0.50, 0.90, 2, 3, "thunders — rare thundersnow"]      # thunders — rare thundersnow (discrete)
+
+# Grizzly Hills (394)
+WeatherVibe.Zone.394[0] = [0,   0.18, 0.00, 0.26, 3, 5, "fine — warm filtered sun"]        # fine — warm filtered sun (core: fine)
+WeatherVibe.Zone.394[1] = [0,   0.14, 0.00, 0.26, 2, 4, "fine — broken cloud"]             # fine — broken cloud (core: fine)
+WeatherVibe.Zone.394[2] = [0,   0.10, 0.00, 0.26, 3, 5, "fine — bright clearing"]          # fine — bright clearing (core: fine)
+WeatherVibe.Zone.394[3] = [1,   0.18, 0.27, 0.39, 2, 4, "rain — forest drizzle"]           # rain — forest drizzle (core-light)
+WeatherVibe.Zone.394[4] = [1,   0.14, 0.40, 0.69, 3, 5, "rain — steady rain"]              # rain — steady rain (core-medium)
+WeatherVibe.Zone.394[5] = [1,   0.10, 0.70, 0.90, 2, 4, "rain — heavy shower bands"]       # rain — heavy shower bands (core-heavy)
+WeatherVibe.Zone.394[6] = [2,   0.08, 0.27, 0.50, 2, 4, "snow — late-season flurries"]     # snow — late-season flurries (core-light→low medium)
+WeatherVibe.Zone.394[7] = [3,   0.06, 0.40, 0.80, 2, 4, "storm — gusty squalls"]           # storm — gusty squalls (core-medium→heavy)
+WeatherVibe.Zone.394[8] = [3,   0.04, 0.70, 0.90, 2, 3, "storm — severe squall line"]      # storm — severe squall line (core-heavy)
+WeatherVibe.Zone.394[9] = [86,  0.02, 0.50, 0.95, 2, 4, "thunders — embedded thunder"]     # thunders — embedded thunder (discrete)
+
+# Zul'Drak (66)
+WeatherVibe.Zone.66[0] = [0,   0.03, 0.00, 0.26, 2, 3, "fine — cold calm"]                 # fine — cold calm (core: fine)
+WeatherVibe.Zone.66[1] = [0,   0.03, 0.00, 0.26, 2, 3, "fine — weak sun"]                  # fine — weak sun (core: fine)
+WeatherVibe.Zone.66[2] = [1,   0.04, 0.27, 0.39, 1, 2, "rain — freezing drizzle pockets"]  # rain — freezing drizzle pockets (core-light)
+WeatherVibe.Zone.66[3] = [2,   0.22, 0.27, 0.39, 2, 4, "snow — flurries"]                  # snow — flurries (core-light)
+WeatherVibe.Zone.66[4] = [2,   0.18, 0.40, 0.69, 3, 5, "snow — steady"]                    # snow — steady (core-medium)
+WeatherVibe.Zone.66[5] = [2,   0.14, 0.70, 0.90, 3, 5, "snow — moderate-heavy"]            # snow — moderate-heavy (core-heavy)
+WeatherVibe.Zone.66[6] = [2,   0.12, 0.85, 1.00, 3, 5, "snow — heavy bursts"]              # snow — heavy bursts (core-heavy)
+WeatherVibe.Zone.66[7] = [3,   0.12, 0.40, 0.85, 3, 5, "storm — katabatic squalls"]        # storm — katabatic squalls (core-medium→heavy)
+WeatherVibe.Zone.66[8] = [3,   0.08, 0.70, 1.00, 4, 8, "storm — blizzard conditions"]      # storm — blizzard conditions (core-heavy)
+WeatherVibe.Zone.66[9] = [86,  0.02, 0.50, 0.90, 2, 3, "thunders — rare thunder-ice mix"]  # thunders — rare thunder-ice mix (discrete)
+
+# Sholazar Basin (3711)
+WeatherVibe.Zone.3711[0] = [0,   0.14, 0.00, 0.26, 2, 4, "fine — humid sun"]               # fine — humid sun (core: fine)
+WeatherVibe.Zone.3711[1] = [0,   0.14, 0.00, 0.26, 2, 4, "fine — bright intervals"]        # fine — bright intervals (core: fine)
+WeatherVibe.Zone.3711[2] = [1,   0.18, 0.40, 0.69, 1, 3, "rain — convective shower"]       # rain — convective shower (core-medium)
+WeatherVibe.Zone.3711[3] = [1,   0.16, 0.70, 0.90, 3, 5, "rain — tropical downpour"]       # rain — tropical downpour (core-heavy)
+WeatherVibe.Zone.3711[4] = [1,   0.10, 0.70, 0.95, 2, 4, "rain — monsoon burst"]           # rain — monsoon burst (core-heavy)
+WeatherVibe.Zone.3711[5] = [3,   0.12, 0.55, 0.85, 2, 4, "storm — gust front rain"]        # storm — gust front rain (core-medium→heavy)
+WeatherVibe.Zone.3711[6] = [3,   0.08, 0.70, 0.95, 2, 4, "storm — severe squalls"]         # storm — severe squalls (core-heavy)
+WeatherVibe.Zone.3711[7] = [86,  0.05, 0.50, 0.95, 2, 4, "thunders — thunderstorms"]       # thunders — thunderstorms (discrete)
+WeatherVibe.Zone.3711[8] = [86,  0.03, 0.70, 0.95, 2, 3, "thunders — strong lightning cells"] # thunders — strong lightning cells (discrete)
+WeatherVibe.Zone.3711[9] = [0,   0.02, 0.00, 0.26, 2, 4, "fine — calm after rain"]         # fine — calm after rain (core: fine)
+
+# Crystalsong Forest (2817)
+WeatherVibe.Zone.2817[0] = [0,   0.18, 0.00, 0.26, 3, 5, "fine — crystalline calm"]        # fine — crystalline calm (core: fine)
+WeatherVibe.Zone.2817[1] = [0,   0.14, 0.00, 0.26, 2, 4, "fine — subdued glow"]            # fine — subdued glow (core: fine)
+WeatherVibe.Zone.2817[2] = [0,   0.10, 0.00, 0.26, 3, 5, "fine — bright clarity"]          # fine — bright clarity (core: fine)
+WeatherVibe.Zone.2817[3] = [2,   0.16, 0.27, 0.39, 2, 4, "snow — glitter flurries"]        # snow — glitter flurries (core-light)
+WeatherVibe.Zone.2817[4] = [2,   0.12, 0.40, 0.69, 3, 5, "snow — steady crystalline snow"] # snow — steady crystalline snow (core-medium)
+WeatherVibe.Zone.2817[5] = [2,   0.08, 0.70, 0.90, 2, 4, "snow — heavier pulses"]          # snow — heavier pulses (core-heavy)
+WeatherVibe.Zone.2817[6] = [3,   0.10, 0.40, 0.70, 2, 4, "storm — arcane squalls"]         # storm — arcane squalls (core-medium)
+WeatherVibe.Zone.2817[7] = [3,   0.08, 0.70, 0.85, 2, 3, "storm — severe gusts"]           # storm — severe gusts (core-heavy)
+WeatherVibe.Zone.2817[8] = [86,  0.02, 0.50, 0.85, 1, 2, "thunders — faint crystalline thunder"] # thunders — faint crystalline thunder (discrete)
+WeatherVibe.Zone.2817[9] = [0,   0.02, 0.00, 0.26, 3, 5, "fine — tranquil lull"]           # fine — tranquil lull (core: fine)
+
+# The Storm Peaks (67)
+WeatherVibe.Zone.67[0] = [0,   0.03, 0.00, 0.26, 2, 3, "fine — brief sun break"]           # fine — brief sun break (core: fine)
+WeatherVibe.Zone.67[1] = [0,   0.02, 0.00, 0.26, 2, 4, "fine — high cloud/ice haze"]       # fine — high cloud/ice haze (core: fine)
+WeatherVibe.Zone.67[2] = [2,   0.24, 0.27, 0.39, 2, 4, "snow — persistent flurries"]       # snow — persistent flurries (core-light)
+WeatherVibe.Zone.67[3] = [2,   0.20, 0.40, 0.69, 3, 5, "snow — steady alpine snow"]        # snow — steady alpine snow (core-medium)
+WeatherVibe.Zone.67[4] = [2,   0.16, 0.70, 0.90, 3, 5, "snow — heavy mountain snow"]       # snow — heavy mountain snow (core-heavy)
+WeatherVibe.Zone.67[5] = [2,   0.10, 0.85, 1.00, 4, 8, "snow — near-blizzard"]             # snow — near-blizzard (core-heavy)
+WeatherVibe.Zone.67[6] = [2,   0.08, 0.27, 0.45, 2, 3, "snow — on/off showers"]            # snow — on/off showers (core-light→low medium)
+WeatherVibe.Zone.67[7] = [3,   0.10, 0.40, 0.85, 3, 5, "storm — ridge squalls"]            # storm — ridge squalls (core-medium→heavy)
+WeatherVibe.Zone.67[8] = [3,   0.06, 0.70, 1.00, 4, 8, "storm — full blizzard"]            # storm — full blizzard (core-heavy)
+WeatherVibe.Zone.67[9] = [86,  0.02, 0.50, 0.90, 2, 3, "thunders — thundersnow"]           # thunders — thundersnow (discrete)
+
+# Icecrown (210)
+WeatherVibe.Zone.210[0] = [0,   0.03, 0.00, 0.26, 2, 3, "fine — dim polar sun"]            # fine — dim polar sun (core: fine)
+WeatherVibe.Zone.210[1] = [0,   0.02, 0.00, 0.26, 2, 3, "fine — brittle clear"]            # fine — brittle clear (core: fine)
+WeatherVibe.Zone.210[2] = [2,   0.24, 0.27, 0.39, 2, 4, "snow — light bands"]              # snow — light bands (core-light)
+WeatherVibe.Zone.210[3] = [2,   0.20, 0.40, 0.69, 3, 5, "snow — steady"]                   # snow — steady (core-medium)
+WeatherVibe.Zone.210[4] = [2,   0.16, 0.70, 0.95, 3, 5, "snow — heavy"]                    # snow — heavy (core-heavy)
+WeatherVibe.Zone.210[5] = [2,   0.12, 0.85, 1.00, 4, 8, "snow — whiteout bursts"]          # snow — whiteout bursts (core-heavy)
+WeatherVibe.Zone.210[6] = [3,   0.10, 0.40, 0.85, 4, 8, "storm — siege squalls"]           # storm — siege squalls (core-medium→heavy)
+WeatherVibe.Zone.210[7] = [3,   0.08, 0.70, 1.00, 4, 8, "storm — full blizzard"]           # storm — full blizzard (core-heavy)
+WeatherVibe.Zone.210[8] = [2,   0.10, 0.27, 0.45, 2, 3, "snow — intermittent showers"]     # snow — intermittent showers (core-light→low medium)
+WeatherVibe.Zone.210[9] = [86,  0.02, 0.50, 0.90, 2, 3, "thunders — rumbling thundersnow"] # thunders — rumbling thundersnow (discrete)
+
+# Wintergrasp (4197)
+WeatherVibe.Zone.4197[0] = [0,   0.06, 0.00, 0.26, 2, 3, "fine — calm before battle"]      # fine — calm before battle (core: fine)
+WeatherVibe.Zone.4197[1] = [2,   0.22, 0.27, 0.39, 2, 4, "snow — flurries"]                # snow — flurries (core-light)
+WeatherVibe.Zone.4197[2] = [2,   0.18, 0.40, 0.69, 3, 5, "snow — steady"]                  # snow — steady (core-medium)
+WeatherVibe.Zone.4197[3] = [2,   0.14, 0.70, 0.95, 3, 5, "snow — heavy"]                   # snow — heavy (core-heavy)
+WeatherVibe.Zone.4197[4] = [2,   0.10, 0.85, 1.00, 4, 8, "snow — whiteout bursts"]         # snow — whiteout bursts (core-heavy)
+WeatherVibe.Zone.4197[5] = [3,   0.14, 0.40, 0.90, 3, 5, "storm — battlefield blizzard"]   # storm — battlefield blizzard (core-medium→heavy)
+WeatherVibe.Zone.4197[6] = [3,   0.08, 0.70, 1.00, 4, 8, "storm — severe gusts"]           # storm — severe gusts (core-heavy)
+WeatherVibe.Zone.4197[7] = [2,   0.12, 0.27, 0.45, 2, 3, "snow — intermittent"]            # snow — intermittent (core-light→low medium)
+WeatherVibe.Zone.4197[8] = [86,  0.04, 0.50, 0.90, 2, 4, "thunders — thunder under squalls"] # thunders — thunder under squalls (discrete)
+WeatherVibe.Zone.4197[9] = [0,   0.06, 0.00, 0.26, 2, 4, "fine — clear interlude"]         # fine — clear interlude (core: fine)
+
+
+--------------------------
+# OUTLAND (Map 530)
+--------------------------
+
+# Hellfire Peninsula (3483)
+WeatherVibe.Zone.3483[0] = [0,   0.10, 0.00, 0.26, 2, 4, "fine — harsh sun through ash"]   # fine — harsh sun through ash (core: fine)
+WeatherVibe.Zone.3483[1] = [3,   0.30, 0.40, 0.85, 3, 5, "storm — dusty fronts"]           # storm — dusty fronts (core-medium→heavy)
+WeatherVibe.Zone.3483[2] = [3,   0.22, 0.70, 1.00, 3, 6, "storm — violent supercells"]     # storm — violent supercells (core-heavy)
+WeatherVibe.Zone.3483[3] = [86,  0.18, 0.50, 0.95, 2, 4, "thunders — frequent lightning"]  # thunders — frequent lightning (discrete)
+WeatherVibe.Zone.3483[4] = [1,   0.10, 0.27, 0.55, 1, 3, "rain — ash-laden showers"]       # rain — ash-laden showers (core-light→medium)
+WeatherVibe.Zone.3483[5] = [0,   0.10, 0.00, 0.26, 2, 4, "fine — blazing clear"]           # fine — blazing clear (core: fine)
+WeatherVibe.Zone.3483[6] = [3,   0.10, 0.70, 1.00, 3, 6, "storm — wall of dust"]           # storm — wall of dust (core-heavy)
+
+# Zangarmarsh (3521)
+WeatherVibe.Zone.3521[0] = [0,   0.12, 0.00, 0.26, 2, 4, "fine — mist-lit calm"]           # fine — mist-lit calm (core: fine)
+WeatherVibe.Zone.3521[1] = [1,   0.26, 0.27, 0.55, 2, 4, "rain — soft drizzle"]            # rain — soft drizzle (core-light→medium)
+WeatherVibe.Zone.3521[2] = [1,   0.24, 0.40, 0.80, 3, 5, "rain — steady marsh rain"]       # rain — steady marsh rain (core-medium→heavy)
+WeatherVibe.Zone.3521[3] = [1,   0.14, 0.27, 0.45, 2, 4, "rain — misty sprinkles"]         # rain — misty sprinkles (core-light)
+WeatherVibe.Zone.3521[4] = [3,   0.14, 0.40, 0.85, 2, 4, "storm — thunder-rain squalls"]   # storm — thunder-rain squalls (core-medium→heavy)
+WeatherVibe.Zone.3521[5] = [86,  0.06, 0.50, 0.90, 2, 3, "thunders — bog lightning"]       # thunders — bog lightning (discrete)
+WeatherVibe.Zone.3521[6] = [0,   0.08, 0.00, 0.26, 2, 4, "fine — calm after rain"]         # fine — calm after rain (core: fine)
+
+# Terokkar Forest (3519)
+WeatherVibe.Zone.3519[0] = [0,   0.22, 0.00, 0.26, 2, 4, "fine — filtered forest light"]   # fine — filtered forest light (core: fine)
+WeatherVibe.Zone.3519[1] = [1,   0.28, 0.40, 0.69, 3, 5, "rain — steady showers"]          # rain — steady showers (core-medium)
+WeatherVibe.Zone.3519[2] = [1,   0.14, 0.27, 0.45, 2, 4, "rain — drizzle pockets"]         # rain — drizzle pockets (core-light)
+WeatherVibe.Zone.3519[3] = [3,   0.16, 0.40, 0.85, 2, 4, "storm — gusty fronts"]           # storm — gusty fronts (core-medium→heavy)
+WeatherVibe.Zone.3519[4] = [86,  0.08, 0.50, 0.90, 2, 4, "thunders — embedded thunder"]    # thunders — embedded thunder (discrete)
+WeatherVibe.Zone.3519[5] = [0,   0.12, 0.00, 0.26, 2, 4, "fine — bright clearing"]         # fine — bright clearing (core: fine)
+
+# Nagrand (3518)
+WeatherVibe.Zone.3518[0] = [0,   0.42, 0.00, 0.26, 2, 4, "fine — golden plains sun"]       # fine — golden plains sun (core: fine)
+WeatherVibe.Zone.3518[1] = [0,   0.10, 0.00, 0.26, 2, 4, "fine — brilliant sky"]           # fine — brilliant sky (core: fine)
+WeatherVibe.Zone.3518[2] = [3,   0.18, 0.40, 0.75, 2, 4, "storm — breezy squalls"]         # storm — breezy squalls (core-medium→heavy)
+WeatherVibe.Zone.3518[3] = [1,   0.12, 0.27, 0.55, 1, 3, "rain — sunshowers"]              # rain — sunshowers (core-light→medium)
+WeatherVibe.Zone.3518[4] = [86,  0.08, 0.40, 0.85, 2, 3, "thunders — plains lightning"]    # thunders — plains lightning (discrete)
+WeatherVibe.Zone.3518[5] = [3,   0.10, 0.55, 0.90, 2, 4, "storm — strong gusts"]           # storm — strong gusts (core-heavy edge)
+
+# Blade's Edge Mountains (3522)
+WeatherVibe.Zone.3522[0] = [0,   0.16, 0.00, 0.26, 2, 4, "fine — high thin cloud"]         # fine — high thin cloud (core: fine)
+WeatherVibe.Zone.3522[1] = [3,   0.28, 0.40, 0.85, 3, 5, "storm — sharp ridge winds"]      # storm — sharp ridge winds (core-medium→heavy)
+WeatherVibe.Zone.3522[2] = [3,   0.22, 0.70, 1.00, 3, 6, "storm — severe mountain squalls"] # storm — severe mountain squalls (core-heavy)
+WeatherVibe.Zone.3522[3] = [1,   0.12, 0.27, 0.50, 1, 3, "rain — brief orographic shower"] # rain — brief orographic shower (core-light→medium)
+WeatherVibe.Zone.3522[4] = [86,  0.10, 0.50, 0.90, 2, 4, "thunders — lightning over peaks"]# thunders — lightning over peaks (discrete)
+WeatherVibe.Zone.3522[5] = [0,   0.12, 0.00, 0.26, 2, 4, "fine — bright mountain sun"]     # fine — bright mountain sun (core: fine)
+
+# Netherstorm (3523)
+WeatherVibe.Zone.3523[0] = [0,   0.08, 0.00, 0.26, 2, 4, "fine — eerie calm"]              # fine — eerie calm (core: fine)
+WeatherVibe.Zone.3523[1] = [3,   0.26, 0.70, 1.00, 3, 6, "storm — arcane supercell"]       # storm — arcane supercell (core-heavy)
+WeatherVibe.Zone.3523[2] = [86,  0.26, 0.60, 1.00, 3, 6, "thunders — constant crackling"]  # thunders — constant crackling (discrete)
+WeatherVibe.Zone.3523[3] = [3,   0.18, 0.40, 0.85, 2, 4, "storm — turbulent bands"]        # storm — turbulent bands (core-medium→heavy)
+WeatherVibe.Zone.3523[4] = [1,   0.12, 0.27, 0.55, 1, 3, "rain — energized showers"]       # rain — energized showers (core-light→medium)
+WeatherVibe.Zone.3523[5] = [0,   0.10, 0.00, 0.26, 2, 4, "fine — clear arc-light sky"]     # fine — clear arc-light sky (core: fine)
+
+# Shadowmoon Valley (3520)
+WeatherVibe.Zone.3520[0] = [0,   0.10, 0.00, 0.26, 2, 4, "fine — sullen glow"]             # fine — sullen glow (core: fine)
+WeatherVibe.Zone.3520[1] = [3,   0.30, 0.50, 0.90, 3, 5, "storm — fel-charged squalls"]    # storm — fel-charged squalls (core-medium→heavy)
+WeatherVibe.Zone.3520[2] = [86,  0.20, 0.60, 0.95, 3, 5, "thunders — rolling fel thunder"] # thunders — rolling fel thunder (discrete)
+WeatherVibe.Zone.3520[3] = [1,   0.14, 0.27, 0.60, 2, 4, "rain — acidic drizzle"]          # rain — acidic drizzle (core-light→medium)
+WeatherVibe.Zone.3520[4] = [3,   0.14, 0.70, 1.00, 3, 6, "storm — extreme cells"]          # storm — extreme cells (core-heavy)
+WeatherVibe.Zone.3520[5] = [0,   0.12, 0.00, 0.26, 2, 4, "fine — clearer intervals"]       # fine — clearer intervals (core: fine)
+
+# Isle of Quel'Danas (4080)
+WeatherVibe.Zone.4080[0] = [0,   0.30, 0.00, 0.26, 2, 4, "fine — bright maritime sun"]     # fine — bright maritime sun (core: fine)
+WeatherVibe.Zone.4080[1] = [1,   0.24, 0.40, 0.70, 2, 4, "rain — coastal showers"]         # rain — coastal showers (core-medium)
+WeatherVibe.Zone.4080[2] = [1,   0.14, 0.27, 0.45, 2, 4, "rain — misty sprinkles"]         # rain — misty sprinkles (core-light)
+WeatherVibe.Zone.4080[3] = [3,   0.12, 0.40, 0.85, 2, 4, "storm — sea squalls"]            # storm — sea squalls (core-medium→heavy)
+WeatherVibe.Zone.4080[4] = [86,  0.10, 0.50, 0.90, 2, 4, "thunders — coastal thunder"]     # thunders — coastal thunder (discrete)
+WeatherVibe.Zone.4080[5] = [0,   0.10, 0.00, 0.26, 2, 4, "fine — sparkling clear"]         # fine — sparkling clear (core: fine)
+
+
+--------------------------
+# EASTERN KINGDOMS (Map 0)
+--------------------------
+
+# Elwynn Forest (12)
+WeatherVibe.Zone.12[0] = [0,  0.28, 0.00, 0.26, 2, 4, "fine — warm sun"]                   # fine — warm sun (core: fine)
+WeatherVibe.Zone.12[1] = [0,  0.24, 0.00, 0.26, 2, 4, "fine — scattered clouds"]           # fine — scattered clouds (core: fine)
+WeatherVibe.Zone.12[2] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — dazzling noon"]              # fine — dazzling noon (core: fine)
+WeatherVibe.Zone.12[3] = [1,  0.16, 0.27, 0.50, 1, 3, "rain — soft shower"]                # rain — soft shower (core-light→medium)
+WeatherVibe.Zone.12[4] = [1,  0.10, 0.40, 0.65, 2, 4, "rain — steady rain"]                # rain — steady rain (core-medium)
+WeatherVibe.Zone.12[5] = [3,  0.08, 0.40, 0.60, 1, 3, "storm — breezy squall"]             # storm — breezy squall (core-medium)
+WeatherVibe.Zone.12[6] = [86, 0.06, 0.50, 0.85, 1, 2, "thunders — brief thunder"]          # thunders — brief thunder (discrete)
+
+# Westfall (40)
+WeatherVibe.Zone.40[0] = [0,  0.28, 0.00, 0.26, 2, 4, "fine — blazing plains sun"]         # fine — blazing plains sun (core: fine)
+WeatherVibe.Zone.40[1] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — crystal clear"]              # fine — crystal clear (core: fine)
+WeatherVibe.Zone.40[2] = [3,  0.22, 0.40, 0.80, 2, 4, "storm — wind-swept squalls"]        # storm — wind-swept squalls (core-medium→heavy)
+WeatherVibe.Zone.40[3] = [3,  0.16, 0.70, 0.90, 2, 4, "storm — severe gusts"]              # storm — severe gusts (core-heavy)
+WeatherVibe.Zone.40[4] = [1,  0.12, 0.27, 0.45, 1, 3, "rain — brief shower"]               # rain — brief shower (core-light)
+WeatherVibe.Zone.40[5] = [86, 0.10, 0.50, 0.90, 2, 3, "thunders — thunder over flats"]     # thunders — thunder over flats (discrete)
+WeatherVibe.Zone.40[6] = [0,  0.04, 0.00, 0.26, 2, 3, "fine — hazy afternoon"]             # fine — hazy afternoon (core: fine)
+
+# Redridge Mountains (44)
+WeatherVibe.Zone.44[0] = [0,  0.18, 0.00, 0.26, 2, 4, "fine — valley sun breaks"]          # fine — valley sun breaks (core: fine)
+WeatherVibe.Zone.44[1] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — bright ridge clarity"]       # fine — bright ridge clarity (core: fine)
+WeatherVibe.Zone.44[2] = [1,  0.26, 0.40, 0.70, 2, 4, "rain — steady mountain rain"]       # rain — steady mountain rain (core-medium)
+WeatherVibe.Zone.44[3] = [1,  0.16, 0.27, 0.45, 1, 3, "rain — mist/drizzle"]               # rain — mist/drizzle (core-light)
+WeatherVibe.Zone.44[4] = [3,  0.16, 0.40, 0.85, 2, 4, "storm — orographic squalls"]        # storm — orographic squalls (core-medium→heavy)
+WeatherVibe.Zone.44[5] = [86, 0.10, 0.50, 0.90, 2, 3, "thunders — ridge thunder"]          # thunders — ridge thunder (discrete)
+WeatherVibe.Zone.44[6] = [0,  0.06, 0.00, 0.26, 2, 3, "fine — low cloud windows"]          # fine — low cloud windows (core: fine)
+
+# Loch Modan (38)
+WeatherVibe.Zone.38[0] = [0,  0.18, 0.00, 0.26, 2, 4, "fine — cool lake sun"]              # fine — cool lake sun (core: fine)
+WeatherVibe.Zone.38[1] = [1,  0.26, 0.40, 0.70, 2, 4, "rain — steady showers"]            # rain — steady showers (core-medium)
+WeatherVibe.Zone.38[2] = [1,  0.14, 0.27, 0.45, 1, 3, "rain — foggy drizzle"]             # rain — foggy drizzle (core-light)
+WeatherVibe.Zone.38[3] = [3,  0.18, 0.40, 0.85, 2, 4, "storm — lake squalls"]             # storm — lake squalls (core-medium→heavy)
+WeatherVibe.Zone.38[4] = [86, 0.10, 0.50, 0.90, 2, 3, "thunders — echoing thunder"]       # thunders — echoing thunder (discrete)
+WeatherVibe.Zone.38[5] = [0,  0.14, 0.00, 0.26, 2, 4, "fine — bright clearing"]           # fine — bright clearing (core: fine)
+
+# Wetlands (11)
+WeatherVibe.Zone.11[0] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — murky sun"]                  # fine — murky sun (core: fine)
+WeatherVibe.Zone.11[1] = [1,  0.28, 0.40, 0.75, 3, 5, "rain — soaking rain"]               # rain — soaking rain (core-medium→heavy)
+WeatherVibe.Zone.11[2] = [1,  0.18, 0.27, 0.50, 2, 4, "rain — drizzle/fog"]                # rain — drizzle/fog (core-light→medium)
+WeatherVibe.Zone.11[3] = [3,  0.26, 0.40, 0.90, 3, 5, "storm — coastal squalls"]           # storm — coastal squalls (core-medium→heavy)
+WeatherVibe.Zone.11[4] = [86, 0.08, 0.50, 0.90, 2, 4, "thunders — marsh thunder"]          # thunders — marsh thunder (discrete)
+WeatherVibe.Zone.11[5] = [1,  0.12, 0.55, 0.90, 3, 5, "rain — heavy bands"]                # rain — heavy bands (core-heavy)
+
+# Dun Morogh (1)
+WeatherVibe.Zone.1[0] =  [0,  0.06, 0.00, 0.26, 2, 3, "fine — overcast/ice haze"]          # fine — overcast/ice haze (core: fine)
+WeatherVibe.Zone.1[1] =  [0,  0.05, 0.00, 0.26, 2, 3, "fine — crisp clear"]                # fine — crisp clear (core: fine)
+WeatherVibe.Zone.1[2] =  [2,  0.24, 0.27, 0.39, 2, 4, "snow — light flurries"]             # snow — light flurries (core-light)
+WeatherVibe.Zone.1[3] =  [2,  0.18, 0.40, 0.69, 3, 5, "snow — steady"]                     # snow — steady (core-medium)
+WeatherVibe.Zone.1[4] =  [2,  0.12, 0.70, 0.95, 3, 5, "snow — heavy"]                      # snow — heavy (core-heavy)
+WeatherVibe.Zone.1[5] =  [3,  0.12, 0.40, 0.90, 3, 5, "storm — blowing snow"]              # storm — blowing snow (core-medium→heavy)
+WeatherVibe.Zone.1[6] =  [3,  0.06, 0.70, 1.00, 4, 8, "storm — blizzard"]                  # storm — blizzard (core-heavy)
+WeatherVibe.Zone.1[7] =  [86, 0.02, 0.50, 0.90, 2, 3, "thunders — thundersnow"]            # thunders — thundersnow (discrete)
+
+# Alterac Mountains (36)
+WeatherVibe.Zone.36[0] = [0,  0.06, 0.00, 0.26, 2, 3, "fine — clear, cold"]                # fine — clear, cold (core: fine)
+WeatherVibe.Zone.36[1] = [2,  0.30, 0.40, 0.90, 3, 5, "snow — steady mountain snow"]       # snow — steady mountain snow (core-medium→heavy)
+WeatherVibe.Zone.36[2] = [2,  0.18, 0.70, 1.00, 3, 5, "snow — heavy pulses"]               # snow — heavy pulses (core-heavy)
+WeatherVibe.Zone.36[3] = [3,  0.18, 0.40, 0.90, 3, 5, "storm — ridge squalls"]             # storm — ridge squalls (core-medium→heavy)
+WeatherVibe.Zone.36[4] = [86, 0.06, 0.50, 0.90, 2, 3, "thunders — thunder over peaks"]     # thunders — thunder over peaks (discrete)
+WeatherVibe.Zone.36[5] = [2,  0.12, 0.27, 0.60, 2, 4, "snow — on/off showers"]             # snow — on/off showers (core-light→medium)
+
+# Duskwood (10)
+WeatherVibe.Zone.10[0] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — dim sun, fog pockets"]       # fine — dim sun, fog pockets (core: fine)
+WeatherVibe.Zone.10[1] = [1,  0.26, 0.40, 0.75, 3, 5, "rain — gloomy rain"]                # rain — gloomy rain (core-medium→heavy)
+WeatherVibe.Zone.10[2] = [1,  0.20, 0.27, 0.50, 2, 4, "rain — mist/drizzle"]               # rain — mist/drizzle (core-light→medium)
+WeatherVibe.Zone.10[3] = [3,  0.20, 0.40, 0.85, 2, 4, "storm — dark squalls"]              # storm — dark squalls (core-medium→heavy)
+WeatherVibe.Zone.10[4] = [86, 0.10, 0.50, 0.90, 2, 4, "thunders — rumbling thunder"]       # thunders — rumbling thunder (discrete)
+WeatherVibe.Zone.10[5] = [0,  0.16, 0.00, 0.26, 2, 4, "fine — clearing window"]            # fine — clearing window (core: fine)
+
+# Silverpine Forest (130)
+WeatherVibe.Zone.130[0] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — bleak sun"]                 # fine — bleak sun (core: fine)
+WeatherVibe.Zone.130[1] = [1,  0.26, 0.27, 0.60, 2, 4, "rain — coastal drizzle"]           # rain — coastal drizzle (core-light→medium)
+WeatherVibe.Zone.130[2] = [1,  0.20, 0.40, 0.70, 2, 4, "rain — steady rain"]               # rain — steady rain (core-medium)
+WeatherVibe.Zone.130[3] = [3,  0.20, 0.40, 0.85, 2, 4, "storm — squalls off the sea"]      # storm — squalls off the sea (core-medium→heavy)
+WeatherVibe.Zone.130[4] = [86, 0.08, 0.50, 0.90, 2, 3, "thunders — coastal thunder"]       # thunders — coastal thunder (discrete)
+WeatherVibe.Zone.130[5] = [0,  0.14, 0.00, 0.26, 2, 4, "fine — cloud breaks"]              # fine — cloud breaks (core: fine)
+
+# Tirisfal Glades (85)
+WeatherVibe.Zone.85[0] = [0,  0.18, 0.00, 0.26, 2, 4, "fine — eerie light"]                # fine — eerie light (core: fine)
+WeatherVibe.Zone.85[1] = [1,  0.26, 0.27, 0.60, 2, 4, "rain — showers"]                    # rain — showers (core-light→medium)
+WeatherVibe.Zone.85[2] = [1,  0.20, 0.40, 0.75, 2, 4, "rain — soaking bands"]              # rain — soaking bands (core-medium→heavy)
+WeatherVibe.Zone.85[3] = [3,  0.16, 0.40, 0.80, 2, 4, "storm — gusts over fields"]         # storm — gusts over fields (core-medium→heavy)
+WeatherVibe.Zone.85[4] = [86, 0.06, 0.50, 0.90, 2, 3, "thunders — distant thunder"]        # thunders — distant thunder (discrete)
+WeatherVibe.Zone.85[5] = [0,  0.14, 0.00, 0.26, 2, 4, "fine — clearing"]                   # fine — clearing (core: fine)
+
+# Swamp of Sorrows (8)
+WeatherVibe.Zone.8[0] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — humid sun"]                   # fine — humid sun (core: fine)
+WeatherVibe.Zone.8[1] = [1,  0.30, 0.40, 0.75, 3, 5, "rain — thick rain"]                  # rain — thick rain (core-medium→heavy)
+WeatherVibe.Zone.8[2] = [1,  0.22, 0.27, 0.50, 2, 4, "rain — drizzle/fog"]                 # rain — drizzle/fog (core-light→medium)
+WeatherVibe.Zone.8[3] = [3,  0.24, 0.40, 0.90, 2, 4, "storm — thunder-rain squalls"]       # storm — thunder-rain squalls (core-medium→heavy)
+WeatherVibe.Zone.8[4] = [86, 0.08, 0.50, 0.90, 2, 4, "thunders — frequent thunder"]        # thunders — frequent thunder (discrete)
+WeatherVibe.Zone.8[5] = [1,  0.08, 0.70, 0.90, 3, 5, "rain — tropical bursts"]             # rain — tropical bursts (core-heavy)
+
+# Stranglethorn Vale (33)
+WeatherVibe.Zone.33[0] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — humid breaks"]               # fine — humid breaks (core: fine)
+WeatherVibe.Zone.33[1] = [1,  0.26, 0.40, 0.80, 2, 4, "rain — rainforest shower"]          # rain — rainforest shower (core-medium→heavy)
+WeatherVibe.Zone.33[2] = [3,  0.26, 0.55, 0.95, 2, 4, "storm — tropical squall"]           # storm — tropical squall (core-heavy)
+WeatherVibe.Zone.33[3] = [86, 0.20, 0.50, 0.95, 2, 4, "thunders — daily thunder"]          # thunders — daily thunder (discrete)
+WeatherVibe.Zone.33[4] = [1,  0.12, 0.27, 0.55, 1, 3, "rain — light misting"]              # rain — light misting (core-light→medium)
+WeatherVibe.Zone.33[5] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — post-storm clear"]           # fine — post-storm clear (core: fine)
+
+# Arathi Highlands (45)
+WeatherVibe.Zone.45[0] = [0,  0.22, 0.00, 0.26, 2, 4, "fine — windy sun"]                  # fine — windy sun (core: fine)
+WeatherVibe.Zone.45[1] = [1,  0.16, 0.27, 0.55, 1, 3, "rain — passing shower"]             # rain — passing shower (core-light→medium)
+WeatherVibe.Zone.45[2] = [3,  0.28, 0.40, 0.85, 2, 4, "storm — fast-moving squalls"]       # storm — fast-moving squalls (core-medium→heavy)
+WeatherVibe.Zone.45[3] = [86, 0.12, 0.50, 0.90, 2, 3, "thunders — rolling thunder"]        # thunders — rolling thunder (discrete)
+WeatherVibe.Zone.45[4] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — crystal clear"]              # fine — crystal clear (core: fine)
+WeatherVibe.Zone.45[5] = [3,  0.10, 0.55, 0.90, 2, 4, "storm — severe line"]               # storm — severe line (core-heavy)
+
+# Hillsbrad Foothills (267)
+WeatherVibe.Zone.267[0] = [0,  0.22, 0.00, 0.26, 2, 4, "fine — bright meadow sun"]         # fine — bright meadow sun (core: fine)
+WeatherVibe.Zone.267[1] = [1,  0.26, 0.40, 0.70, 2, 4, "rain — steady rain"]               # rain — steady rain (core-medium)
+WeatherVibe.Zone.267[2] = [1,  0.16, 0.27, 0.50, 1, 3, "rain — drizzle bands"]             # rain — drizzle bands (core-light→medium)
+WeatherVibe.Zone.267[3] = [3,  0.16, 0.40, 0.80, 2, 4, "storm — gusts out of the passes"]  # storm — gusts out of the passes (core-medium→heavy)
+WeatherVibe.Zone.267[4] = [86, 0.08, 0.50, 0.90, 2, 3, "thunders — foothill thunder"]      # thunders — foothill thunder (discrete)
+WeatherVibe.Zone.267[5] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — clearing ridge view"]       # fine — clearing ridge view (core: fine)
+
+# The Hinterlands (47)
+WeatherVibe.Zone.47[0] = [0,  0.24, 0.00, 0.26, 2, 4, "fine — highland sun"]               # fine — highland sun (core: fine)
+WeatherVibe.Zone.47[1] = [1,  0.24, 0.27, 0.60, 2, 4, "rain — showers"]                    # rain — showers (core-light→medium)
+WeatherVibe.Zone.47[2] = [3,  0.22, 0.40, 0.85, 2, 4, "storm — fast squalls"]              # storm — fast squalls (core-medium→heavy)
+WeatherVibe.Zone.47[3] = [86, 0.10, 0.50, 0.90, 2, 3, "thunders — cliff thunder"]          # thunders — cliff thunder (discrete)
+WeatherVibe.Zone.47[4] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — brilliant clear"]            # fine — brilliant clear (core: fine)
+WeatherVibe.Zone.47[5] = [1,  0.08, 0.40, 0.75, 2, 4, "rain — heavier bands"]              # rain — heavier bands (core-medium→heavy)
+
+# Western Plaguelands (28)
+WeatherVibe.Zone.28[0] = [0,  0.16, 0.00, 0.26, 2, 4, "fine — bleak sunlight"]             # fine — bleak sunlight (core: fine)
+WeatherVibe.Zone.28[1] = [1,  0.22, 0.27, 0.60, 2, 4, "rain — gray rain"]                  # rain — gray rain (core-light→medium)
+WeatherVibe.Zone.28[2] = [3,  0.30, 0.40, 0.90, 3, 5, "storm — harsh fronts"]              # storm — harsh fronts (core-medium→heavy)
+WeatherVibe.Zone.28[3] = [86, 0.10, 0.50, 0.90, 2, 4, "thunders — grim thunder"]           # thunders — grim thunder (discrete)
+WeatherVibe.Zone.28[4] = [2,  0.06, 0.40, 0.80, 2, 4, "snow — late cold snaps"]            # snow — late cold snaps (core-medium→heavy)
+WeatherVibe.Zone.28[5] = [0,  0.16, 0.00, 0.26, 2, 4, "fine — clearer window"]             # fine — clearer window (core: fine)
+
+# Eastern Plaguelands (139)
+WeatherVibe.Zone.139[0] = [0,  0.24, 0.00, 0.26, 2, 4, "fine — dry sun"]                   # fine — dry sun (core: fine)
+WeatherVibe.Zone.139[1] = [3,  0.30, 0.40, 0.90, 2, 4, "storm — dusty fronts"]             # storm — dusty fronts (core-medium→heavy)
+WeatherVibe.Zone.139[2] = [3,  0.18, 0.70, 1.00, 2, 4, "storm — violent dust storm"]       # storm — violent dust storm (core-heavy)
+WeatherVibe.Zone.139[3] = [1,  0.10, 0.27, 0.45, 1, 3, "rain — brief light rain"]          # rain — brief light rain (core-light)
+WeatherVibe.Zone.139[4] = [86, 0.06, 0.50, 0.90, 2, 3, "thunders — dry lightning"]         # thunders — dry lightning (discrete)
+WeatherVibe.Zone.139[5] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — brilliant clear"]           # fine — brilliant clear (core: fine)
+
+# Searing Gorge (51)
+WeatherVibe.Zone.51[0] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — smoky sun"]                  # fine — smoky sun (core: fine)
+WeatherVibe.Zone.51[1] = [3,  0.34, 0.40, 0.90, 3, 5, "storm — ash squalls"]               # storm — ash squalls (core-medium→heavy)
+WeatherVibe.Zone.51[2] = [86, 0.18, 0.50, 0.90, 2, 4, "thunders — volcanic thunder"]       # thunders — volcanic thunder (discrete)
+WeatherVibe.Zone.51[3] = [3,  0.16, 0.70, 1.00, 3, 6, "storm — severe ash wall"]           # storm — severe ash wall (core-heavy)
+WeatherVibe.Zone.51[4] = [1,  0.08, 0.27, 0.40, 1, 3, "rain — rare sprinkle"]              # rain — rare sprinkle (core-light)
+WeatherVibe.Zone.51[5] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — harsh clear"]                # fine — harsh clear (core: fine)
+
+# Burning Steppes (46)
+WeatherVibe.Zone.46[0] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — furnace sun"]                # fine — furnace sun (core: fine)
+WeatherVibe.Zone.46[1] = [3,  0.34, 0.40, 0.90, 3, 5, "storm — hot gust fronts"]           # storm — hot gust fronts (core-medium→heavy)
+WeatherVibe.Zone.46[2] = [86, 0.18, 0.50, 0.90, 2, 4, "thunders — dry lightning"]          # thunders — dry lightning (discrete)
+WeatherVibe.Zone.46[3] = [3,  0.18, 0.70, 1.00, 3, 6, "storm — violent dust storm"]        # storm — violent dust storm (core-heavy)
+WeatherVibe.Zone.46[4] = [1,  0.08, 0.27, 0.40, 1, 3, "rain — rare light rain"]            # rain — rare light rain (core-light)
+WeatherVibe.Zone.46[5] = [0,  0.10, 0.00, 0.26, 2, 4, "fine — blazing blue"]               # fine — blazing blue (core: fine)
+
+# Badlands (3)
+WeatherVibe.Zone.3[0] = [0,  0.32, 0.00, 0.26, 2, 4, "fine — scorching sun"]               # fine — scorching sun (core: fine)
+WeatherVibe.Zone.3[1] = [3,  0.28, 0.40, 0.85, 2, 4, "storm — dust squalls"]               # storm — dust squalls (core-medium→heavy)
+WeatherVibe.Zone.3[2] = [3,  0.18, 0.70, 1.00, 2, 4, "storm — dust wall"]                  # storm — dust wall (core-heavy)
+WeatherVibe.Zone.3[3] = [1,  0.06, 0.27, 0.40, 1, 2, "rain — very rare sprinkle"]          # rain — very rare sprinkle (core-light)
+WeatherVibe.Zone.3[4] = [86, 0.06, 0.50, 0.85, 2, 3, "thunders — dry thunder"]             # thunders — dry thunder (discrete)
+WeatherVibe.Zone.3[5] = [0,  0.10, 0.00, 0.26, 2, 4, "fine — crystal clear"]               # fine — crystal clear (core: fine)
+
+# Blasted Lands (4)
+WeatherVibe.Zone.4[0] = [0,  0.20, 0.00, 0.26, 2, 4, "fine — harsh sun"]                   # fine — harsh sun (core: fine)
+WeatherVibe.Zone.4[1] = [3,  0.30, 0.40, 0.90, 3, 5, "storm — corrupted fronts"]           # storm — corrupted fronts (core-medium→heavy)
+WeatherVibe.Zone.4[2] = [86, 0.22, 0.50, 0.90, 2, 4, "thunders — frequent thunder"]        # thunders — frequent thunder (discrete)
+WeatherVibe.Zone.4[3] = [1,  0.10, 0.27, 0.55, 1, 3, "rain — rare shower"]                 # rain — rare shower (core-light→medium)
+WeatherVibe.Zone.4[4] = [3,  0.08, 0.70, 1.00, 3, 6, "storm — violent cell"]               # storm — violent cell (core-heavy)
+WeatherVibe.Zone.4[5] = [0,  0.10, 0.00, 0.26, 2, 4, "fine — brighter interval"]           # fine — brighter interval (core: fine)
+
+# Deadwind Pass (41)
+WeatherVibe.Zone.41[0] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — uncanny calm"]               # fine — uncanny calm (core: fine)
+WeatherVibe.Zone.41[1] = [3,  0.34, 0.40, 0.95, 3, 5, "storm — ominous fronts"]            # storm — ominous fronts (core-medium→heavy)
+WeatherVibe.Zone.41[2] = [86, 0.22, 0.50, 0.90, 2, 4, "thunders — booming thunder"]        # thunders — booming thunder (discrete)
+WeatherVibe.Zone.41[3] = [1,  0.16, 0.40, 0.70, 2, 4, "rain — dark showers"]               # rain — dark showers (core-medium)
+WeatherVibe.Zone.41[4] = [3,  0.10, 0.70, 1.00, 3, 6, "storm — severe squall"]             # storm — severe squall (core-heavy)
+WeatherVibe.Zone.41[5] = [0,  0.10, 0.00, 0.26, 2, 4, "fine — transient clearing"]         # fine — transient clearing (core: fine)
+
+# Eversong Woods (3430)
+WeatherVibe.Zone.3430[0] = [0,  0.38, 0.00, 0.26, 2, 4, "fine — golden canopy light"]      # fine — golden canopy light (core: fine)
+WeatherVibe.Zone.3430[1] = [1,  0.24, 0.27, 0.45, 1, 3, "rain — gentle shower"]            # rain — gentle shower (core-light)
+WeatherVibe.Zone.3430[2] = [1,  0.16, 0.40, 0.60, 2, 4, "rain — steady rain"]              # rain — steady rain (core-medium)
+WeatherVibe.Zone.3430[3] = [3,  0.08, 0.40, 0.70, 1, 3, "storm — brief squall"]            # storm — brief squall (core-medium)
+WeatherVibe.Zone.3430[4] = [86, 0.04, 0.50, 0.85, 1, 2, "thunders — distant thunder"]      # thunders — distant thunder (discrete)
+WeatherVibe.Zone.3430[5] = [0,  0.10, 0.00, 0.26, 2, 4, "fine — radiant clear"]            # fine — radiant clear (core: fine)
+
+# Ghostlands (3433)
+WeatherVibe.Zone.3433[0] = [0,  0.16, 0.00, 0.26, 2, 4, "fine — pallid sun"]               # fine — pallid sun (core: fine)
+WeatherVibe.Zone.3433[1] = [1,  0.26, 0.27, 0.60, 2, 4, "rain — steady showers"]           # rain — steady showers (core-light→medium)
+WeatherVibe.Zone.3433[2] = [3,  0.26, 0.40, 0.85, 2, 4, "storm — rolling fronts"]          # storm — rolling fronts (core-medium→heavy)
+WeatherVibe.Zone.3433[3] = [86, 0.14, 0.50, 0.90, 2, 4, "thunders — crackling skies"]      # thunders — crackling skies (discrete)
+WeatherVibe.Zone.3433[4] = [1,  0.10, 0.40, 0.75, 2, 4, "rain — heavier bands"]            # rain — heavier bands (core-medium)
+WeatherVibe.Zone.3433[5] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — rare clear"]               # fine — rare clear (core: fine)
+
+
+--------------------------
+# KALIMDOR (Map 1)
+--------------------------
+
+# Durotar (14)
+WeatherVibe.Zone.14[0] = [0,  0.44, 0.00, 0.26, 2, 4, "fine — blazing desert sun"]         # fine — blazing desert sun (core: fine)
+WeatherVibe.Zone.14[1] = [3,  0.22, 0.40, 0.80, 2, 4, "storm — dusty winds"]               # storm — dusty winds (core-medium→heavy)
+WeatherVibe.Zone.14[2] = [3,  0.14, 0.70, 0.95, 2, 4, "storm — dust wall"]                 # storm — dust wall (core-heavy)
+WeatherVibe.Zone.14[3] = [1,  0.06, 0.27, 0.40, 1, 2, "rain — very rare sprinkle"]         # rain — very rare sprinkle (core-light)
+WeatherVibe.Zone.14[4] = [86, 0.06, 0.50, 0.85, 2, 3, "thunders — dry thunder"]            # thunders — dry thunder (discrete)
+WeatherVibe.Zone.14[5] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — crystal clear"]              # fine — crystal clear (core: fine)
+
+# The Barrens (17)
+WeatherVibe.Zone.17[0] = [0,  0.46, 0.00, 0.26, 2, 4, "fine — scorching midday"]           # fine — scorching midday (core: fine)
+WeatherVibe.Zone.17[1] = [3,  0.22, 0.40, 0.80, 2, 4, "storm — plains gusts"]              # storm — plains gusts (core-medium→heavy)
+WeatherVibe.Zone.17[2] = [3,  0.12, 0.70, 0.90, 2, 4, "storm — dust squalls"]              # storm — dust squalls (core-heavy)
+WeatherVibe.Zone.17[3] = [1,  0.08, 0.27, 0.45, 1, 3, "rain — brief shower"]               # rain — brief shower (core-light)
+WeatherVibe.Zone.17[4] = [86, 0.06, 0.50, 0.85, 2, 3, "thunders — afternoon thunder"]      # thunders — afternoon thunder (discrete)
+WeatherVibe.Zone.17[5] = [0,  0.06, 0.00, 0.26, 2, 4, "fine — hazy sun"]                   # fine — hazy sun (core: fine)
+
+# Mulgore (215)
+WeatherVibe.Zone.215[0] = [0,  0.52, 0.00, 0.26, 2, 4, "fine — warm prairie sun"]          # fine — warm prairie sun (core: fine)
+WeatherVibe.Zone.215[1] = [1,  0.18, 0.27, 0.55, 2, 4, "rain — gentle showers"]            # rain — gentle showers (core-light→medium)
+WeatherVibe.Zone.215[2] = [3,  0.10, 0.40, 0.70, 2, 4, "storm — breezy fronts"]            # storm — breezy fronts (core-medium)
+WeatherVibe.Zone.215[3] = [86, 0.06, 0.50, 0.85, 2, 3, "thunders — rolling thunder"]       # thunders — rolling thunder (discrete)
+WeatherVibe.Zone.215[4] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — broad clear"]               # fine — broad clear (core: fine)
+WeatherVibe.Zone.215[5] = [1,  0.06, 0.40, 0.75, 2, 4, "rain — heavier bands"]             # rain — heavier bands (core-medium→heavy)
+
+# Darkshore (148)
+WeatherVibe.Zone.148[0] = [0,  0.16, 0.00, 0.26, 2, 4, "fine — cool coastal sun"]          # fine — cool coastal sun (core: fine)
+WeatherVibe.Zone.148[1] = [1,  0.28, 0.40, 0.75, 3, 5, "rain — ocean rain"]                # rain — ocean rain (core-medium→heavy)
+WeatherVibe.Zone.148[2] = [3,  0.24, 0.40, 0.85, 2, 4, "storm — shore squalls"]            # storm — shore squalls (core-medium→heavy)
+WeatherVibe.Zone.148[3] = [86, 0.10, 0.50, 0.90, 2, 4, "thunders — coastal thunder"]       # thunders — coastal thunder (discrete)
+WeatherVibe.Zone.148[4] = [1,  0.10, 0.27, 0.45, 1, 3, "rain — mist/drizzle"]              # rain — mist/drizzle (core-light)
+WeatherVibe.Zone.148[5] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — brighter breaks"]           # fine — brighter breaks (core: fine)
+
+# Teldrassil (141)
+WeatherVibe.Zone.141[0] = [0,  0.38, 0.00, 0.26, 2, 4, "fine — canopy-filtered sun"]       # fine — canopy-filtered sun (core: fine)
+WeatherVibe.Zone.141[1] = [1,  0.24, 0.27, 0.45, 1, 3, "rain — gentle forest shower"]      # rain — gentle forest shower (core-light)
+WeatherVibe.Zone.141[2] = [1,  0.14, 0.40, 0.60, 2, 4, "rain — steady"]                    # rain — steady (core-medium)
+WeatherVibe.Zone.141[3] = [3,  0.08, 0.40, 0.70, 1, 3, "storm — brief squall"]             # storm — brief squall (core-medium)
+WeatherVibe.Zone.141[4] = [86, 0.06, 0.50, 0.85, 1, 2, "thunders — distant thunder"]       # thunders — distant thunder (discrete)
+WeatherVibe.Zone.141[5] = [0,  0.10, 0.00, 0.26, 2, 4, "fine — bright clearing"]           # fine — bright clearing (core: fine)
+
+# Ashenvale (331)
+WeatherVibe.Zone.331[0] = [0,  0.32, 0.00, 0.26, 2, 4, "fine — dappled light"]             # fine — dappled light (core: fine)
+WeatherVibe.Zone.331[1] = [1,  0.28, 0.27, 0.60, 2, 4, "rain — steady showers"]            # rain — steady showers (core-light→medium)
+WeatherVibe.Zone.331[2] = [3,  0.18, 0.40, 0.80, 2, 4, "storm — gusty fronts"]             # storm — gusty fronts (core-medium→heavy)
+WeatherVibe.Zone.331[3] = [86, 0.08, 0.50, 0.85, 2, 3, "thunders — rolling thunder"]       # thunders — rolling thunder (discrete)
+WeatherVibe.Zone.331[4] = [1,  0.08, 0.40, 0.75, 2, 4, "rain — heavy rain bands"]          # rain — heavy rain bands (core-medium→heavy)
+WeatherVibe.Zone.331[5] = [0,  0.06, 0.00, 0.26, 2, 4, "fine — radiant spell"]             # fine — radiant spell (core: fine)
+
+# Stonetalon Mountains (406)
+WeatherVibe.Zone.406[0] = [0,  0.18, 0.00, 0.26, 2, 4, "fine — cool mountain sun"]         # fine — cool mountain sun (core: fine)
+WeatherVibe.Zone.406[1] = [1,  0.22, 0.27, 0.60, 2, 4, "rain — steady"]                    # rain — steady (core-light→medium)
+WeatherVibe.Zone.406[2] = [3,  0.26, 0.40, 0.85, 2, 4, "storm — ridge squalls"]            # storm — ridge squalls (core-medium→heavy)
+WeatherVibe.Zone.406[3] = [86, 0.12, 0.50, 0.90, 2, 4, "thunders — echoing thunder"]       # thunders — echoing thunder (discrete)
+WeatherVibe.Zone.406[4] = [1,  0.10, 0.40, 0.75, 2, 4, "rain — heavy bands"]               # rain — heavy bands (core-medium→heavy)
+WeatherVibe.Zone.406[5] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — clearing window"]           # fine — clearing window (core: fine)
+
+# Desolace (405)
+WeatherVibe.Zone.405[0] = [0,  0.30, 0.00, 0.26, 2, 4, "fine — bleak sun"]                 # fine — bleak sun (core: fine)
+WeatherVibe.Zone.405[1] = [3,  0.26, 0.40, 0.85, 2, 4, "storm — dusty gusts"]              # storm — dusty gusts (core-medium→heavy)
+WeatherVibe.Zone.405[2] = [3,  0.16, 0.70, 1.00, 2, 4, "storm — dust wall"]                # storm — dust wall (core-heavy)
+WeatherVibe.Zone.405[3] = [1,  0.10, 0.27, 0.40, 1, 2, "rain — rare sprinkle"]             # rain — rare sprinkle (core-light)
+WeatherVibe.Zone.405[4] = [86, 0.06, 0.50, 0.85, 2, 3, "thunders — dry thunder"]           # thunders — dry thunder (discrete)
+WeatherVibe.Zone.405[5] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — brilliant clear"]           # fine — brilliant clear (core: fine)
+
+# Feralas (357)
+WeatherVibe.Zone.357[0] = [0,  0.24, 0.00, 0.26, 2, 4, "fine — filtered jungle sun"]       # fine — filtered jungle sun (core: fine)
+WeatherVibe.Zone.357[1] = [1,  0.30, 0.40, 0.70, 3, 5, "rain — rainforest rain"]           # rain — rainforest rain (core-medium)
+WeatherVibe.Zone.357[2] = [1,  0.16, 0.27, 0.45, 2, 4, "rain — light mist"]                # rain — light mist (core-light)
+WeatherVibe.Zone.357[3] = [3,  0.14, 0.40, 0.80, 2, 4, "storm — jungle squalls"]           # storm — jungle squalls (core-medium→heavy)
+WeatherVibe.Zone.357[4] = [86, 0.08, 0.50, 0.85, 2, 4, "thunders — tropical thunder"]      # thunders — tropical thunder (discrete)
+WeatherVibe.Zone.357[5] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — post-rain clearing"]        # fine — post-rain clearing (core: fine)
+
+# Dustwallow Marsh (15)
+WeatherVibe.Zone.15[0] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — weak sun in mist"]           # fine — weak sun in mist (core: fine)
+WeatherVibe.Zone.15[1] = [1,  0.28, 0.40, 0.75, 3, 5, "rain — persistent rain"]            # rain — persistent rain (core-medium→heavy)
+WeatherVibe.Zone.15[2] = [3,  0.24, 0.40, 0.85, 2, 4, "storm — thunder-squalls"]           # storm — thunder-squalls (core-medium→heavy)
+WeatherVibe.Zone.15[3] = [1,  0.20, 0.27, 0.50, 2, 4, "rain — drizzle/fog"]                # rain — drizzle/fog (core-light→medium)
+WeatherVibe.Zone.15[4] = [86, 0.08, 0.50, 0.90, 2, 4, "thunders — frequent thunder"]       # thunders — frequent thunder (discrete)
+WeatherVibe.Zone.15[5] = [1,  0.12, 0.70, 0.90, 3, 5, "rain — heavy bands"]                # rain — heavy bands (core-heavy)
+
+# Thousand Needles (400)
+WeatherVibe.Zone.400[0] = [0,  0.32, 0.00, 0.26, 2, 4, "fine — canyon sun"]                # fine — canyon sun (core: fine)
+WeatherVibe.Zone.400[1] = [3,  0.28, 0.40, 0.85, 2, 4, "storm — canyon gusts"]             # storm — canyon gusts (core-medium→heavy)
+WeatherVibe.Zone.400[2] = [3,  0.14, 0.70, 1.00, 2, 4, "storm — dust wall"]                # storm — dust wall (core-heavy)
+WeatherVibe.Zone.400[3] = [1,  0.06, 0.27, 0.40, 1, 2, "rain — rare sprinkle"]             # rain — rare sprinkle (core-light)
+WeatherVibe.Zone.400[4] = [86, 0.06, 0.50, 0.85, 2, 3, "thunders — dry thunder"]           # thunders — dry thunder (discrete)
+WeatherVibe.Zone.400[5] = [0,  0.14, 0.00, 0.26, 2, 4, "fine — crystal clear"]             # fine — crystal clear (core: fine)
+
+# Tanaris (440)
+WeatherVibe.Zone.440[0] = [0,  0.38, 0.00, 0.26, 2, 4, "fine — desert sun"]                # fine — desert sun (core: fine)
+WeatherVibe.Zone.440[1] = [3,  0.26, 0.40, 0.85, 2, 4, "storm — sand squalls"]             # storm — sand squalls (core-medium→heavy)
+WeatherVibe.Zone.440[2] = [3,  0.14, 0.70, 1.00, 2, 4, "storm — sand wall"]                # storm — sand wall (core-heavy)
+WeatherVibe.Zone.440[3] = [86, 0.10, 0.50, 0.85, 2, 3, "thunders — dry lightning"]         # thunders — dry lightning (discrete)
+WeatherVibe.Zone.440[4] = [1,  0.04, 0.27, 0.40, 1, 2, "rain — extremely rare sprinkle"]   # rain — extremely rare sprinkle (core-light)
+WeatherVibe.Zone.440[5] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — pristine clear"]            # fine — pristine clear (core: fine)
+
+# Un'Goro Crater (490)
+WeatherVibe.Zone.490[0] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — humid sunny breaks"]        # fine — humid sunny breaks (core: fine)
+WeatherVibe.Zone.490[1] = [1,  0.30, 0.40, 0.80, 2, 4, "rain — deep rainforest rain"]      # rain — deep rainforest rain (core-medium→heavy)
+WeatherVibe.Zone.490[2] = [3,  0.24, 0.55, 0.95, 2, 4, "storm — tropical squalls"]         # storm — tropical squalls (core-heavy)
+WeatherVibe.Zone.490[3] = [86, 0.16, 0.50, 0.90, 2, 4, "thunders — frequent thunder"]      # thunders — frequent thunder (discrete)
+WeatherVibe.Zone.490[4] = [1,  0.10, 0.27, 0.55, 1, 3, "rain — light mist"]                # rain — light mist (core-light→medium)
+WeatherVibe.Zone.490[5] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — post-rain clear"]           # fine — post-rain clear (core: fine)
+
+# Silithus (1377)
+WeatherVibe.Zone.1377[0] = [0,  0.30, 0.00, 0.26, 2, 4, "fine — relentless sun"]           # fine — relentless sun (core: fine)
+WeatherVibe.Zone.1377[1] = [3,  0.26, 0.40, 0.85, 2, 4, "storm — dune squalls"]            # storm — dune squalls (core-medium→heavy)
+WeatherVibe.Zone.1377[2] = [3,  0.18, 0.70, 1.00, 2, 4, "storm — sand wall"]               # storm — sand wall (core-heavy)
+WeatherVibe.Zone.1377[3] = [86, 0.08, 0.50, 0.85, 2, 3, "thunders — dry thunder"]          # thunders — dry thunder (discrete)
+WeatherVibe.Zone.1377[4] = [1,  0.06, 0.27, 0.40, 1, 2, "rain — vanishingly rare"]         # rain — vanishingly rare (core-light)
+WeatherVibe.Zone.1377[5] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — crystal clear"]            # fine — crystal clear (core: fine)
+
+# Felwood (361)
+WeatherVibe.Zone.361[0] = [0,  0.12, 0.00, 0.26, 2, 4, "fine — tainted light"]             # fine — tainted light (core: fine)
+WeatherVibe.Zone.361[1] = [1,  0.28, 0.40, 0.70, 2, 4, "rain — dank rain"]                 # rain — dank rain (core-medium)
+WeatherVibe.Zone.361[2] = [3,  0.24, 0.40, 0.85, 2, 4, "storm — grim squalls"]             # storm — grim squalls (core-medium→heavy)
+WeatherVibe.Zone.361[3] = [86, 0.16, 0.50, 0.85, 2, 4, "thunders — corrupted thunder"]     # thunders — corrupted thunder (discrete)
+WeatherVibe.Zone.361[4] = [1,  0.10, 0.27, 0.45, 1, 3, "rain — mist/fog"]                  # rain — mist/fog (core-light)
+WeatherVibe.Zone.361[5] = [0,  0.10, 0.00, 0.26, 2, 4, "fine — brief clearing"]            # fine — brief clearing (core: fine)
+
+# Azshara (16)
+WeatherVibe.Zone.16[0] = [0,  0.18, 0.00, 0.26, 2, 4, "fine — cliff-top sun"]              # fine — cliff-top sun (core: fine)
+WeatherVibe.Zone.16[1] = [1,  0.24, 0.27, 0.60, 2, 4, "rain — coastal showers"]            # rain — coastal showers (core-light→medium)
+WeatherVibe.Zone.16[2] = [3,  0.28, 0.40, 0.85, 2, 4, "storm — sea squalls"]               # storm — sea squalls (core-medium→heavy)
+WeatherVibe.Zone.16[3] = [86, 0.12, 0.50, 0.85, 2, 4, "thunders — ocean thunder"]          # thunders — ocean thunder (discrete)
+WeatherVibe.Zone.16[4] = [1,  0.08, 0.27, 0.45, 1, 3, "rain — mist"]                       # rain — mist (core-light)
+WeatherVibe.Zone.16[5] = [0,  0.10, 0.00, 0.26, 2, 4, "fine — bright spell"]               # fine — bright spell (core: fine)
+
+# Moonglade (493)
+WeatherVibe.Zone.493[0] = [0,  0.48, 0.00, 0.26, 2, 4, "fine — tranquil light"]            # fine — tranquil light (core: fine)
+WeatherVibe.Zone.493[1] = [1,  0.20, 0.27, 0.50, 2, 4, "rain — gentle shower"]             # rain — gentle shower (core-light→medium)
+WeatherVibe.Zone.493[2] = [1,  0.12, 0.40, 0.60, 2, 4, "rain — steady"]                    # rain — steady (core-medium)
+WeatherVibe.Zone.493[3] = [3,  0.08, 0.40, 0.70, 1, 3, "storm — brief gust"]               # storm — brief gust (core-medium)
+WeatherVibe.Zone.493[4] = [86, 0.04, 0.50, 0.85, 1, 2, "thunders — faint thunder"]         # thunders — faint thunder (discrete)
+WeatherVibe.Zone.493[5] = [0,  0.08, 0.00, 0.26, 2, 4, "fine — clearer interval"]          # fine — clearer interval (core: fine)
+
+# Winterspring (618)
+WeatherVibe.Zone.618[0] = [0,  0.08, 0.00, 0.26, 2, 3, "fine — brittle sun"]               # fine — brittle sun (core: fine)
+WeatherVibe.Zone.618[1] = [2,  0.34, 0.40, 0.95, 3, 5, "snow — steady alpine snow"]        # snow — steady alpine snow (core-medium→heavy)
+WeatherVibe.Zone.618[2] = [3,  0.18, 0.40, 0.90, 3, 5, "storm — drifting/blowing snow"]    # storm — drifting/blowing snow (core-medium→heavy)
+WeatherVibe.Zone.618[3] = [2,  0.14, 0.70, 1.00, 3, 5, "snow — heavy pulses"]              # snow — heavy pulses (core-heavy)
+WeatherVibe.Zone.618[4] = [2,  0.10, 0.27, 0.60, 2, 4, "snow — flurries"]                  # snow — flurries (core-light→medium)
+WeatherVibe.Zone.618[5] = [86, 0.04, 0.50, 0.85, 2, 3, "thunders — rare thundersnow"]      # thunders — rare thundersnow (discrete)
