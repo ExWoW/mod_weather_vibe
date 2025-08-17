@@ -14,14 +14,15 @@ TODO:
 ```
 - Extending logic or eventually even adding dynamic weather models
 - Adding weather fronts moving through entire world
-- Testing normally locked zones that dont allow weather
-- Do not update when there are no players/real players in the zone (performance)
-- More testing
+- Adding and testing zones which are normally locked for weather changes
+- [Optimize performance] do not update weather when there are no players/real players in the zone
 ```
 
 You can enable all zones by running the scripts mentioned below, they are part of the default config but i havent 
 test them yet. There is enable script which adds the missing zones, and disable which deletes the zones we just
-added. The default zones are not touches in neither of the scripts.
+added. 
+
+Nevertheless the default configuration contains all weather profiles all zones, default and none defaults.
 
 ## Enable weather for all zones
 
@@ -272,6 +273,7 @@ If visuals don’t change:
 ## License
 
 This module is released under the **GNU AGPL v3**, consistent with AzerothCore.
+
 
 
 
