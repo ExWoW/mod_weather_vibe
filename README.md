@@ -36,6 +36,10 @@ Nevertheless the default configuration contains all weather profiles all zones, 
 </p>
 
 <p align="center">
+  <img src="./ashenvale.png">
+</p>
+
+<p align="center">
   <img src="./wintergrasp.png">
 </p>
 
