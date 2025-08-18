@@ -36,7 +36,7 @@ Nevertheless the default configuration contains all weather profiles all zones, 
 </p>
 
 <p align="center">
-  <img src="./wintergrap.png">
+  <img src="./wintergrasp.png">
 </p>
 
 ## Enable weather for all zones
