@@ -126,7 +126,7 @@ SQL DISABLE newly added zoned, back to defaults
 To prevent the core Weather from constantly overwriting this module’s applied patterns, **set a large core interval**:
 ```bash
     # worldserver.conf
-    ChangeWeatherInterval = 86400000   # 24 hours 
+    ChangeWeatherInterval = 600000
 ```
 
 6. **Restart**
