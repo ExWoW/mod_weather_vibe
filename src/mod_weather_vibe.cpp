@@ -1,43 +1,5 @@
 /***************************************
- * mod_weather_vibe — GLOBAL environment weather controller (zone-wide)
- *
- * CONFIG PER-ZONE ENTRIES (array form):
- *   WeatherVibe.Zone.<ZoneId>[i] = [type, weight, min, max, minMinutes, maxMinutes, "description"]
- *     - type:       0=fine, 1=rain, 2=snow, 3=storm (sand/ash), 86=thunders
- *     - weight:     relative weight (0 disables)
- *     - min/max:    intensity in [0..1] (match core bands; see below)
- *     - min/maxMinutes: dwell time window for this pattern (real minutes)
- *     - description: free text; used in debug broadcasts
- *
- * CORE WEATHER BANDS (AzerothCore Weather.cpp):
- *   grade < 0.27 => WEATHER_STATE_FINE (even for non-fine types)
- *   0.27–0.39    => LIGHT
- *   0.40–0.69    => MEDIUM
- *   0.70–1.00    => HEAVY
- *   THUNDERS is a discrete state, driven by type=86 (grade still sent).
- *
- * GLOBAL SETTINGS (excerpt):
- *   WeatherVibe.Enable = 1/0
- *   WeatherVibe.Interval = <seconds>              // engine tick
- *   WeatherVibe.TransitionTime.Min/Max = <seconds>// cross-fade duration
- *   WeatherVibe.Jitter.Zone.Min/Max = <seconds>   // per-zone extra delay
- *   WeatherVibe.Seasons = "auto"|"off"|"spring"|"summer"|"fall"|"winter"
- *   WeatherVibe.Debug = 0/1                       // broadcast brief texts on apply
- *
- * ALWAYS-ON SMOOTHING (time-neutral within dwell):
- *   • Thunder Prelude (in-dwell): any transition into type=86 (thunders) starts with a brief rain ramp
- *     inside the *same* thunders dwell (no extra time). After the ramp, we cross-fade to thunders.
- *     - WeatherVibe.ThunderPrelude.RainIntensity.Min/Max (0..1)
- *     - WeatherVibe.ThunderPrelude.Duration.Min/Max (seconds)
- *     - WeatherVibe.ThunderPrelude.RaiseIfRaining (0/1)
- *
- *   • Storm Outro (in-dwell): when a storm (3) or (optionally) thunders (86) nears the end of its dwell,
- *     we fade its grade down during the *remaining dwell time* and then switch to the next pattern.
- *     - WeatherVibe.StormOutro.IncludeThunders (0/1)
- *     - WeatherVibe.StormOutro.TargetGrade (0..1)
- *     - WeatherVibe.StormOutro.Duration.Min/Max (seconds)
- *
- * NOTE: Transition bans are not used; smoothing guarantees natural flow.
+ * mod_weather_vibe
  ***************************************/
 #include "ScriptMgr.h"
 #include "World.h"
@@ -100,7 +62,7 @@ namespace
         std::string desc;      // human readable description
 
         bool enabled() const { return weight > 0.0f && mx >= mn + 0.00001f; }
-        float clamp(float v) const { return std::min(std::max(v, mn), mx); }
+        float clamp01(float v) const { return std::min(std::max(v, 0.0f), 1.0f); }
     };
 
     struct ZoneProfile
@@ -165,8 +127,9 @@ namespace
     enum class SeasonMode { Off, Auto, Spring, Summer, Fall, Winter };
     static SeasonMode s_seasonMode = SeasonMode::Auto;
 
-    // Per-season multipliers by type index (0=fine,1=rain,2=snow,3=storm,4=thunders)
-    static float const kSeasonMul[4][5] = {
+    // Season multipliers by type index (0=fine,1=rain,2=snow,3=storm,4=thunders)
+    // Defaults match original; can be overridden from .conf
+    static float s_seasonMul[4][5] = {
         /* Spring */ { 0.90f, 1.25f, 0.60f, 1.00f, 1.10f },
         /* Summer */ { 1.20f, 0.90f, 0.20f, 1.20f, 1.30f },
         /* Fall   */ { 0.90f, 1.20f, 0.70f, 1.00f, 0.90f },
@@ -186,9 +149,23 @@ namespace
     static uint32 s_stormOutroDurMin = 20u;
     static uint32 s_stormOutroDurMax = 60u;
 
+    // ===== CLIME VARIATION (NEW) =====
+    static uint32 s_climeVarMinutes = 0u;     // 0 = disabled
+    static float  s_climeWeightPct = 0.0f;   // e.g., 0.15 => ±15% on weight
+    static float  s_climeIntensityAbs = 0.0f;   // e.g., 0.05 => shift ±0.05 on mn/mx
+
+    struct ClimeState
+    {
+        bool  inited = false;
+        float weightMul[5] = { 1,1,1,1,1 };   // multiplicative (>=0)
+        float intShift[5] = { 0,0,0,0,0 };   // additive (can be ±)
+        time_t nextUpdate = 0;
+    };
+
     // ZoneId -> profile/state
     static std::unordered_map<uint32, ZoneProfile> s_zoneProfiles;
     static std::unordered_map<uint32, ZoneState>   s_zoneState;
+    static std::unordered_map<uint32, ClimeState>  s_climeByZone;
 
     // =========================
     // Utilities / helpers
@@ -243,16 +220,86 @@ namespace
         return -1;
     }
 
-    static float SeasonAdjustedWeight(Pattern const& p)
+    // Read a season multiplier from config with a safe default and clamping
+    static float ReadMul(char const* season, char const* type, float def)
     {
-        int si = ResolveSeasonIndex();
-        if (si < 0) return p.weight;
+        std::string key = "WeatherVibe.Season.";
+        key += season; key += "."; key += type; key += ".Mul";
+        float v = sConfigMgr->GetOption<float>(key, def);
+        return v < 0.0f ? 0.0f : v; // never negative
+    }
 
-        int ti = TypeIndex(p.type);
-        float mul = kSeasonMul[si][ti];
-        if (p.weight <= 0.0f) return 0.0f;
+    // ---------- CLIME VARIATION CORE ----------
+    static void UpdateClimeIfDue(uint32 zoneId)
+    {
+        if (s_climeVarMinutes == 0u || (s_climeWeightPct <= 0.0f && s_climeIntensityAbs <= 0.0f))
+            return;
 
-        float w = p.weight * mul;
+        ClimeState& C = s_climeByZone[zoneId];
+        time_t now = GameTime::GetGameTime().count();
+
+        if (!C.inited || now >= C.nextUpdate)
+        {
+            // New random biases per type for the next window
+            for (int ti = 0; ti < 5; ++ti)
+            {
+                if (s_climeWeightPct > 0.0f)
+                {
+                    float delta = RandomIn(-s_climeWeightPct, s_climeWeightPct);
+                    C.weightMul[ti] = std::max(0.0f, 1.0f + delta);
+                }
+                else
+                {
+                    C.weightMul[ti] = 1.0f;
+                }
+
+                if (s_climeIntensityAbs > 0.0f)
+                {
+                    C.intShift[ti] = RandomIn(-s_climeIntensityAbs, s_climeIntensityAbs);
+                }
+                else
+                {
+                    C.intShift[ti] = 0.0f;
+                }
+            }
+
+            // Next window (add a tiny jitter so zones don't flip together)
+            C.nextUpdate = now + s_climeVarMinutes * 60u + RandomInUInt(0, 5);
+            C.inited = true;
+
+            if (s_debug)
+                LOG_INFO("weather", "[WeatherVibe] Clime update zone {} (weight ±{:.2f}%, intensity ±{:.2f})",
+                    zoneId, s_climeWeightPct * 100.0f, s_climeIntensityAbs);
+        }
+    }
+
+    static float ClimeWeightMul(uint32 zoneId, int typeIdx)
+    {
+        if (s_climeVarMinutes == 0u || s_climeWeightPct <= 0.0f)
+            return 1.0f;
+        UpdateClimeIfDue(zoneId);
+        auto it = s_climeByZone.find(zoneId);
+        if (it == s_climeByZone.end()) return 1.0f;
+        return std::max(0.0f, it->second.weightMul[typeIdx]);
+    }
+
+    static float ClimeIntensityShift(uint32 zoneId, int typeIdx)
+    {
+        if (s_climeVarMinutes == 0u || s_climeIntensityAbs <= 0.0f)
+            return 0.0f;
+        UpdateClimeIfDue(zoneId);
+        auto it = s_climeByZone.find(zoneId);
+        if (it == s_climeByZone.end()) return 0.0f;
+        return it->second.intShift[typeIdx];
+    }
+    // ------------------------------------------
+
+    static float SeasonAdjustedWeight(int seasonIdx, int typeIdx, float baseWeight)
+    {
+        if (baseWeight <= 0.0f) return 0.0f;
+        if (seasonIdx < 0) return baseWeight;
+        float mul = s_seasonMul[seasonIdx][typeIdx];
+        float w = baseWeight * mul;
         return w < 0.0f ? 0.0f : w;
     }
 
@@ -298,22 +345,30 @@ namespace
         LOG_INFO("weather", "{}", buf);
     }
 
-    // Weighted random pick (season-biased)
-    static int PickPattern(uint32 /*zoneId*/, ZoneProfile const& Z)
+    // Weighted random pick (season + clime biased)
+    static int PickPattern(uint32 zoneId, ZoneProfile const& Z)
     {
+        int seasonIdx = ResolveSeasonIndex();
+
+        // Ensure clime state is up-to-date before we compute weights
+        UpdateClimeIfDue(zoneId);
+
         float total = 0.0f;
         std::vector<float> eff;
         eff.reserve(Z.patterns.size());
+
         for (auto const& p : Z.patterns)
         {
-            float w = p.enabled() ? SeasonAdjustedWeight(p) : 0.0f;
+            float w = p.enabled() ? SeasonAdjustedWeight(seasonIdx, TypeIndex(p.type), p.weight) : 0.0f;
+            if (w > 0.0f)
+                w *= ClimeWeightMul(zoneId, TypeIndex(p.type)); // multiplicative daily drift
             eff.push_back(w);
             total += w;
         }
 
         if (total <= 0.0001f)
         {
-            // fallback: allow anything enabled
+            // fallback: allow anything enabled using raw weights
             total = 0.0f;
             for (size_t i = 0; i < Z.patterns.size(); ++i)
             {
@@ -374,7 +429,6 @@ namespace
             S.transitionStart = now;
             S.transitionEnd = now + durSec;
             S.transitionActive = true;
-            // For our model we flip mid-way unless explicitly asked to keep current type to end
             S.typeFlipPending = flipTypeMidway && !keepTypeUntilEnd && (toType != S.typeCode);
         }
     }
@@ -406,8 +460,16 @@ namespace
         S.dwellUntil = now + dwellSec;
         S.nextTickEligible = now + RandomJitterSec();
 
-        // Pick final target grade for this pattern
-        float finalTarget = P.clamp(RandomIn(P.mn, P.mx));
+        // ---- Apply CLIME intensity shift when choosing the target grade ----
+        float shift = ClimeIntensityShift(zoneId, TypeIndex(P.type));
+        float adjMn = Clamp01(P.mn + shift);
+        float adjMx = Clamp01(P.mx + shift);
+        if (adjMx < adjMn) std::swap(adjMx, adjMn);
+        // keep a tiny width to avoid a collapsed range
+        if (adjMx < adjMn + 0.02f) adjMx = std::min(1.0f, adjMn + 0.02f);
+
+        // Pick final target grade for this pattern from adjusted range
+        float finalTarget = Clamp01(RandomIn(adjMn, adjMx));
 
         // --- Thunder Prelude (IN-DWELL): entering thunders → rain ramp first, within the same dwell
         if (P.type == 86u)
@@ -542,12 +604,10 @@ namespace
                     DebugBroadcast(zoneId, "[WeatherVibe] Zone %u prelude complete → cross-fade to thunders over %us",
                         zoneId, transDur);
 
-                    // If transition duration is zero, we snapped; push now
                     if (!S.transitionActive)
                         PushToCore(zoneId, S.typeCode, S.grade);
 
-                    // Do not pick a new pattern; we're still within the same dwell
-                    return;
+                    return; // still in same dwell
                 }
             }
 
@@ -559,7 +619,6 @@ namespace
         }
 
         // --- IN-DWELL STORM OUTRO PRIMER ---
-        // If we are still within dwell, prime an outro for storm/thunders if close to the end.
         if (now < S.dwellUntil && S.patternIndex >= 0 && S.patternIndex < static_cast<int>(Z.patterns.size()))
         {
             bool canOutroType = (S.typeCode == 3u) || (s_stormOutroIncludeThunders && S.typeCode == 86u);
@@ -568,7 +627,6 @@ namespace
                 uint32 maxOutro = RandomInUInt(s_stormOutroDurMin, s_stormOutroDurMax);
                 time_t remaining = S.dwellUntil - now;
 
-                // If we're inside the last 'maxOutro' seconds, start the outro fade *during* dwell
                 if (remaining > 5 && remaining <= static_cast<time_t>(maxOutro))
                 {
                     // Pre-pick next pattern and ensure it's calmer (not storm/thunders)
@@ -708,6 +766,31 @@ namespace
         s_debug = sConfigMgr->GetOption<bool>("WeatherVibe.Debug", false);
         s_seasonMode = ParseSeasonMode(sConfigMgr->GetOption<std::string>("WeatherVibe.Seasons", "auto"));
 
+        // Season multipliers (configurable). Types: Fine,Rain,Snow,Storm,Thunders
+        s_seasonMul[0][0] = ReadMul("Spring", "Fine", s_seasonMul[0][0]);
+        s_seasonMul[0][1] = ReadMul("Spring", "Rain", s_seasonMul[0][1]);
+        s_seasonMul[0][2] = ReadMul("Spring", "Snow", s_seasonMul[0][2]);
+        s_seasonMul[0][3] = ReadMul("Spring", "Storm", s_seasonMul[0][3]);
+        s_seasonMul[0][4] = ReadMul("Spring", "Thunders", s_seasonMul[0][4]);
+
+        s_seasonMul[1][0] = ReadMul("Summer", "Fine", s_seasonMul[1][0]);
+        s_seasonMul[1][1] = ReadMul("Summer", "Rain", s_seasonMul[1][1]);
+        s_seasonMul[1][2] = ReadMul("Summer", "Snow", s_seasonMul[1][2]);
+        s_seasonMul[1][3] = ReadMul("Summer", "Storm", s_seasonMul[1][3]);
+        s_seasonMul[1][4] = ReadMul("Summer", "Thunders", s_seasonMul[1][4]);
+
+        s_seasonMul[2][0] = ReadMul("Fall", "Fine", s_seasonMul[2][0]);
+        s_seasonMul[2][1] = ReadMul("Fall", "Rain", s_seasonMul[2][1]);
+        s_seasonMul[2][2] = ReadMul("Fall", "Snow", s_seasonMul[2][2]);
+        s_seasonMul[2][3] = ReadMul("Fall", "Storm", s_seasonMul[2][3]);
+        s_seasonMul[2][4] = ReadMul("Fall", "Thunders", s_seasonMul[2][4]);
+
+        s_seasonMul[3][0] = ReadMul("Winter", "Fine", s_seasonMul[3][0]);
+        s_seasonMul[3][1] = ReadMul("Winter", "Rain", s_seasonMul[3][1]);
+        s_seasonMul[3][2] = ReadMul("Winter", "Snow", s_seasonMul[3][2]);
+        s_seasonMul[3][3] = ReadMul("Winter", "Storm", s_seasonMul[3][3]);
+        s_seasonMul[3][4] = ReadMul("Winter", "Thunders", s_seasonMul[3][4]);
+
         // Thunder Prelude params (always-on, IN-DWELL)
         s_thPreRainMin = Clamp01(sConfigMgr->GetOption<float>("WeatherVibe.ThunderPrelude.RainIntensity.Min", 0.45f));
         s_thPreRainMax = Clamp01(sConfigMgr->GetOption<float>("WeatherVibe.ThunderPrelude.RainIntensity.Max", 0.80f));
@@ -723,6 +806,16 @@ namespace
         s_stormOutroDurMin = sConfigMgr->GetOption<uint32>("WeatherVibe.StormOutro.Duration.Min", 20u);
         s_stormOutroDurMax = sConfigMgr->GetOption<uint32>("WeatherVibe.StormOutro.Duration.Max", 60u);
         if (s_stormOutroDurMax < s_stormOutroDurMin) std::swap(s_stormOutroDurMax, s_stormOutroDurMin);
+
+        // CLIME VARIATION (optional)
+        s_climeVarMinutes = sConfigMgr->GetOption<uint32>("WeatherVibe.Clime.VariationTime.Minutes", 0u);
+        s_climeWeightPct = sConfigMgr->GetOption<float>("WeatherVibe.Clime.WeightJitter.Pct", 0.0f);
+        s_climeIntensityAbs = sConfigMgr->GetOption<float>("WeatherVibe.Clime.IntensityJitter.Abs", 0.0f);
+        // basic clamps
+        if (s_climeWeightPct < 0.0f) s_climeWeightPct = 0.0f;
+        if (s_climeWeightPct > 2.0f) s_climeWeightPct = 2.0f; // be sane
+        if (s_climeIntensityAbs < 0.0f) s_climeIntensityAbs = 0.0f;
+        if (s_climeIntensityAbs > 1.0f) s_climeIntensityAbs = 1.0f;
 
         // Zone patterns
         s_zoneProfiles.clear();
@@ -770,14 +863,14 @@ namespace
         }
 
         LOG_INFO("server.loading",
-            "[mod_weather_vibe] config loaded: {} zones (interval={}s, transition={}..{}s, jitter={}..{}s, seasonMode={}, debug={}, prelude=in-dwell, outro=in-dwell).",
+            "[mod_weather_vibe] config loaded: {} zones (interval={}s, transition={}..{}s, jitter={}..{}s, seasonMode={}, debug={}, climeVar={}min).",
             s_zoneProfiles.size(), s_interval, s_transMinSec, s_transMaxSec, s_jitterMin, s_jitterMax,
             (s_seasonMode == SeasonMode::Off ? "off" :
                 s_seasonMode == SeasonMode::Auto ? "auto" :
                 s_seasonMode == SeasonMode::Spring ? "spring" :
                 s_seasonMode == SeasonMode::Summer ? "summer" :
                 s_seasonMode == SeasonMode::Fall ? "fall" : "winter"),
-            s_debug);
+            s_debug, s_climeVarMinutes);
     }
 
     // =========================
@@ -806,7 +899,7 @@ namespace
                 }
             }
 
-            LOG_INFO("server.loading", "[mod_weather_vibe] initialized (array patterns + dwell + season bias + timed transitions + in-dwell prelude/outro).");
+            LOG_INFO("server.loading", "[mod_weather_vibe] initialized (array patterns + dwell + season bias + timed transitions + in-dwell prelude/outro + clime variation).");
         }
 
         void OnAfterConfigLoad(bool /*reload*/) override

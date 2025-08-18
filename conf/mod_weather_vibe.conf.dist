@@ -22,11 +22,64 @@ WeatherVibe.TransitionTime.Max = 90
 WeatherVibe.Jitter.Zone.Min = 1
 WeatherVibe.Jitter.Zone.Max = 5
 
-# Takes seasons into account for weather, recalculates the chance of
-# sun (fine), rain, snow, storm, thunder. Values:
-# "auto", "off", "spring", "summer", "fall", "winter"
-# NOT TESTED, RECOMMAND TO KEEP IT OFF FOR NOW 
+
+#######################################################################################################
+# Clime Variation (optional)
+# Light, timed drift of weights & intensity ranges to avoid static feel.
+# Runs per-zone; affects only types present in each zone's profile.
+#######################################################################################################
+
+# How often to re-roll clime biases.
+# 0 = off
+# STILL TESTING, SO DISABLED
+WeatherVibe.Clime.VariationTime.Minutes = 0
+
+# Max percentage deviation applied multiplicatively to pattern weights.
+# Example: 0.15 => weights vary within [0.85x .. 1.15x].
+WeatherVibe.Clime.WeightJitter.Pct = 0.15
+
+# Max absolute shift applied to intensity min/max when choosing a target grade.
+# Example: 0.05 => min/max shift by ±0.05 (clamped to [0..1]).
+WeatherVibe.Clime.IntensityJitter.Abs = 0.05
+
+
+
+#######################################################################################################
+#  Seasons (optional)
+#######################################################################################################
+
+# Seasons mode: "auto" | "off" | "spring" | "summer" | "fall" | "winter"
+# STILL TESTING, SO DISABLED
 WeatherVibe.Seasons = "off"
+
+# Spring
+WeatherVibe.Season.Spring.Fine.Mul      = 0.90
+WeatherVibe.Season.Spring.Rain.Mul      = 1.25
+WeatherVibe.Season.Spring.Snow.Mul      = 0.60
+WeatherVibe.Season.Spring.Storm.Mul     = 1.00
+WeatherVibe.Season.Spring.Thunders.Mul  = 1.10
+
+# Summer
+WeatherVibe.Season.Summer.Fine.Mul      = 1.20
+WeatherVibe.Season.Summer.Rain.Mul      = 0.90
+WeatherVibe.Season.Summer.Snow.Mul      = 0.20
+WeatherVibe.Season.Summer.Storm.Mul     = 1.20
+WeatherVibe.Season.Summer.Thunders.Mul  = 1.30
+
+# Fall
+WeatherVibe.Season.Fall.Fine.Mul        = 0.90
+WeatherVibe.Season.Fall.Rain.Mul        = 1.20
+WeatherVibe.Season.Fall.Snow.Mul        = 0.70
+WeatherVibe.Season.Fall.Storm.Mul       = 1.00
+WeatherVibe.Season.Fall.Thunders.Mul    = 0.90
+
+# Winter
+WeatherVibe.Season.Winter.Fine.Mul      = 0.70
+WeatherVibe.Season.Winter.Rain.Mul      = 0.50
+WeatherVibe.Season.Winter.Snow.Mul      = 1.50
+WeatherVibe.Season.Winter.Storm.Mul     = 1.20
+WeatherVibe.Season.Winter.Thunders.Mul  = 0.70
+
 
 
 #######################################################################################################
