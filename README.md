@@ -70,10 +70,10 @@ mysql> SELECT zone FROM game_weather
 4080  Isle of Quel'Danas
 ```
 
-SQL ENABLE all zones script
+SQL ENABLE weather effects for all zones script
 [SQL_ENABLE_ALL_ZONES_FOR_WEATHER.sql](https://github.com/hermensbas/mod_weather_vibe/blob/main/SQL_ENABLE_ALL_ZONES_FOR_WEATHER.sql)
 
-SQL DISABLE the newly added zones script
+SQL DISABLE newly added zoned, back to defaults
 [SQL_DISABLE_ALL_ZONES_FOR_WEATHER.sql](https://github.com/hermensbas/mod_weather_vibe/blob/main/SQL_DISABLE_ALL_ZONES_FOR_WEATHER.sql)
 
 ## Installation
@@ -273,6 +273,7 @@ If visuals don’t change:
 ## License
 
 This module is released under the **GNU AGPL v3**, consistent with AzerothCore.
+
 
 
 
