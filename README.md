@@ -1,6 +1,7 @@
 ﻿# AzerothCore Module: Weather Vibe 
 
 (**Work In Progess**)
+(DEBUG by default enabled for now, you can simply disable by updating the conf file)
 
 
 Bring your world to life with **mod_weather_vibe**. This module gives each zone a
@@ -17,12 +18,18 @@ TODO:
 - ~~Adding creating dynamic weather patterns between two defined weather patters.~~
 - [Optimize performance] do not update weather when there are no players/real players in the zone
 
-
 You can enable all zones by running the scripts mentioned below, they are part of the default config but i havent 
 test them yet. There is enable script which adds the missing zones, and disable which deletes the zones we just
 added. 
 
 Nevertheless the default configuration contains all weather profiles all zones, default and none defaults.
+
+
+### Examples
+
+<p align="center">
+  <img src="./example_with_debug.png">
+</p>
 
 ## Enable weather for all zones
 
