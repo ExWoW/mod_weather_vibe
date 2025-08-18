@@ -27,6 +27,8 @@ Nevertheless the default configuration contains all weather profiles all zones, 
 
 ### Examples
 
+[Youtube video](https://youtu.be/6yOxS6jF-3M)
+
 <p align="center">
   <img src="./example_with_debug.png">
 </p>
