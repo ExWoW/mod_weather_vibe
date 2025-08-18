@@ -1,5 +1,5 @@
 /***************************************
- * mod_weather_vibe
+ * mod_weather_vibe — GLOBAL environment weather controller (zone-wide)
  *
  * CONFIG PER-ZONE ENTRIES (array form):
  *   WeatherVibe.Zone.<ZoneId>[i] = [type, weight, min, max, minMinutes, maxMinutes, "description"]
@@ -24,17 +24,20 @@
  *   WeatherVibe.Seasons = "auto"|"off"|"spring"|"summer"|"fall"|"winter"
  *   WeatherVibe.Debug = 0/1                       // broadcast brief texts on apply
  *
- * ALWAYS-ON BEHAVIOR (no enable flags, always active):
- *   • Thunder Prelude: any transition into type=86 (thunders) first ramps rain (type=1)
+ * ALWAYS-ON SMOOTHING (time-neutral within dwell):
+ *   • Thunder Prelude (in-dwell): any transition into type=86 (thunders) starts with a brief rain ramp
+ *     inside the *same* thunders dwell (no extra time). After the ramp, we cross-fade to thunders.
  *     - WeatherVibe.ThunderPrelude.RainIntensity.Min/Max (0..1)
  *     - WeatherVibe.ThunderPrelude.Duration.Min/Max (seconds)
  *     - WeatherVibe.ThunderPrelude.RaiseIfRaining (0/1)
- *   • Storm Outro: when leaving storm (type=3) and (optionally) thunders (86) to a calmer type,
- *     first fade the current type down before handing off
+ *
+ *   • Storm Outro (in-dwell): when a storm (3) or (optionally) thunders (86) nears the end of its dwell,
+ *     we fade its grade down during the *remaining dwell time* and then switch to the next pattern.
  *     - WeatherVibe.StormOutro.IncludeThunders (0/1)
  *     - WeatherVibe.StormOutro.TargetGrade (0..1)
  *     - WeatherVibe.StormOutro.Duration.Min/Max (seconds)
- * 
+ *
+ * NOTE: Transition bans are not used; smoothing guarantees natural flow.
  ***************************************/
 #include "ScriptMgr.h"
 #include "World.h"
@@ -136,15 +139,14 @@ namespace
         uint32 nextTypeCode = 0;           // type of the next pattern
         bool   typeFlipPending = false;    // flip type mid-crossfade
 
-        // --- Thunder prelude (always-on; rain ramp before thunder) ---
-        bool   thunderPreludeActive = false;
-        bool   skipThunderPreludeOnce = false;
-        int    thunderPreludeNextPatIndex = -1;
+        // --- Thunder prelude (in-dwell) ---
+        bool   thunderPreludeActive = false;     // we're currently ramping rain before thunders
+        int    thunderPreludeNextPatIndex = -1;  // the chosen thunders pattern index
+        float  thunderTargetGrade = 0.0f;        // final thunders target after prelude
 
-        // --- Storm outro (always-on; fade before leaving storm/thunder) ---
-        bool   stormOutroActive = false;
-        bool   skipStormOutroOnce = false;
-        int    stormOutroNextPatIndex = -1;
+        // --- Storm outro (in-dwell) ---
+        bool   stormOutroPrimed = false;         // outro started within current dwell
+        int    stormOutroLockedNext = -1;        // pre-picked next pattern to apply at dwell end
     };
 
     // =========================
@@ -171,14 +173,14 @@ namespace
         /* Winter */ { 0.70f, 0.50f, 1.50f, 1.20f, 0.70f }
     };
 
-    // Thunder Prelude params (always-on)
+    // Thunder Prelude params (always-on, IN-DWELL)
     static float  s_thPreRainMin = 0.45f;
     static float  s_thPreRainMax = 0.80f;
     static uint32 s_thPreDurMin = 30u;   // seconds
     static uint32 s_thPreDurMax = 90u;   // seconds
     static bool   s_thPreRaiseIfRaining = true;
 
-    // Storm Outro params (always-on)
+    // Storm Outro params (always-on, IN-DWELL)
     static bool   s_stormOutroIncludeThunders = true;
     static float  s_stormOutroTarget = 0.32f; // 0..1; >0.27 keeps visuals visible
     static uint32 s_stormOutroDurMin = 20u;
@@ -393,57 +395,39 @@ namespace
 
         time_t now = GameTime::GetGameTime().count();
 
-        // --- Storm Outro (always-on): leaving storm/thunders → calmer type
-        if (S.inited && !S.stormOutroActive && !S.skipStormOutroOnce)
-        {
-            bool leavingStormOrThunder = (S.typeCode == 3u) || (s_stormOutroIncludeThunders && S.typeCode == 86u);
-            bool destinationIsCalmer = (P.type != S.typeCode) && (P.type != 3u) && (P.type != 86u);
+        // Compute the dwell window for this pattern upfront
+        uint32 dwellMin = std::max<uint32>(1, P.minMin);
+        uint32 dwellMax = std::max<uint32>(dwellMin, P.maxMin);
+        uint32 dwellMinSec = dwellMin * 60u;
+        uint32 dwellMaxSec = dwellMax * 60u;
+        uint32 dwellSec = RandomInUInt(dwellMinSec, dwellMaxSec) + RandomJitterSec();
 
-            if (leavingStormOrThunder && destinationIsCalmer)
-            {
-                float targetOut = Clamp01(s_stormOutroTarget);
-                if (S.grade > targetOut + 1e-4f)
-                {
-                    uint32 dur = RandomInUInt(s_stormOutroDurMin, s_stormOutroDurMax);
+        // Default: schedule dwell for the new pattern
+        S.dwellUntil = now + dwellSec;
+        S.nextTickEligible = now + RandomJitterSec();
 
-                    S.stormOutroActive = true;
-                    S.stormOutroNextPatIndex = patIndex;
+        // Pick final target grade for this pattern
+        float finalTarget = P.clamp(RandomIn(P.mn, P.mx));
 
-                    // Keep current type; lower grade to targetOut
-                    BeginTransition(S, /*toType=*/S.typeCode, /*toGrade=*/targetOut, /*durSec=*/dur,
-                        /*flipTypeMidway=*/false, /*keepTypeUntilEnd=*/true);
-
-                    // Set dwell & jitter for the outro block
-                    S.dwellUntil = now + dur;
-                    S.nextTickEligible = now + RandomJitterSec();
-
-                    PushToCore(zoneId, S.typeCode, S.grade);
-                    DebugBroadcast(zoneId, "[WeatherVibe] Zone %u outro → easing %s to %.2f over %us",
-                        zoneId, TypeName(S.typeCode), targetOut, dur);
-                    return; // chain to intended pattern when outro ends
-                }
-                // else already low enough; proceed to next type
-            }
-        }
-
-        // --- Thunder Prelude (always-on): entering thunders → rain ramp first
-        if (!S.skipThunderPreludeOnce && P.type == 86u)
+        // --- Thunder Prelude (IN-DWELL): entering thunders → rain ramp first, within the same dwell
+        if (P.type == 86u)
         {
             bool alreadyRaining = (S.inited && S.typeCode == 1u);
-            float preTarget = Clamp01(RandomIn(s_thPreRainMin, s_thPreRainMax));
-
-            bool needPrelude = !alreadyRaining || (s_thPreRaiseIfRaining && S.grade + 1e-4f < s_thPreRainMin);
-
-            if (needPrelude)
+            bool strongEnough = (alreadyRaining && (!s_thPreRaiseIfRaining || S.grade + 1e-4f >= s_thPreRainMin));
+            if (!strongEnough)
             {
-                uint32 dur = RandomInUInt(s_thPreDurMin, s_thPreDurMax);
+                // Prelude: ramp to rain at preTarget for a short duration, inside this dwell
+                float preTarget = Clamp01(RandomIn(s_thPreRainMin, s_thPreRainMax));
+                uint32 preDur = RandomInUInt(s_thPreDurMin, s_thPreDurMax);
 
+                // Store the thunders target we will go to after the ramp
+                S.thunderTargetGrade = finalTarget;
                 S.thunderPreludeActive = true;
-                S.thunderPreludeNextPatIndex = patIndex;
+                S.thunderPreludeNextPatIndex = patIndex; // informational
 
-                // Transition to RAIN (type 1) at 'preTarget'
                 if (!S.inited)
                 {
+                    // Bootstrap directly into rain prelude
                     S.typeCode = 1u;
                     S.grade = preTarget;
                     S.transitionActive = false;
@@ -453,38 +437,23 @@ namespace
                 }
                 else
                 {
-                    BeginTransition(S, /*toType=*/1u, /*toGrade=*/preTarget, /*durSec=*/dur,
+                    BeginTransition(S, /*toType=*/1u, /*toGrade=*/preTarget, /*durSec=*/preDur,
                         /*flipTypeMidway=*/true, /*keepTypeUntilEnd=*/false);
                 }
 
-                // Dwell & jitter for the prelude
-                S.dwellUntil = now + dur;
-                S.nextTickEligible = now + RandomJitterSec();
-
-                DebugBroadcast(zoneId, "[WeatherVibe] Zone %u prelude → rain ramp before thunders (→%.2f for %us)",
-                    zoneId, preTarget, dur);
-                return; // chain to original thunders after ramp ends
+                DebugBroadcast(zoneId, "[WeatherVibe] Zone %u prelude (in-dwell) → rain ramp before thunders (→%.2f for %us)",
+                    zoneId, preTarget, preDur);
+                return; // After the ramp finishes, we'll cross-fade to thunders without changing dwell
             }
-            // else already raining strongly; fall through to apply thunders normally
+            // else: already raining sufficiently; fall through to direct thunders cross-fade inside dwell
         }
 
-        // --- Standard pattern application (season-weighted pick already happened)
-        float target = P.clamp(RandomIn(P.mn, P.mx));
-
-        uint32 dwellMin = std::max<uint32>(1, P.minMin);
-        uint32 dwellMax = std::max<uint32>(dwellMin, P.maxMin);
-        uint32 dwellMinSec = dwellMin * 60u;
-        uint32 dwellMaxSec = dwellMax * 60u;
-        uint32 dwellSec = RandomInUInt(dwellMinSec, dwellMaxSec) + RandomJitterSec();
-
-        S.dwellUntil = now + dwellSec;
-        S.nextTickEligible = now + RandomJitterSec();
-
+        // --- Standard pattern application (or direct thunders if no prelude needed)
         if (!S.inited)
         {
             // First-time bootstrap: snap to selected pattern
             S.typeCode = P.type;
-            S.grade = target;
+            S.grade = finalTarget;
             S.targetGrade = S.grade;
             S.transitionActive = false;
             S.typeFlipPending = false;
@@ -493,7 +462,7 @@ namespace
         }
         else
         {
-            BeginTransition(S, /*toType=*/P.type, /*toGrade=*/target, /*durSec=*/transDur,
+            BeginTransition(S, /*toType=*/P.type, /*toGrade=*/finalTarget, /*durSec=*/transDur,
                 /*flipTypeMidway=*/true, /*keepTypeUntilEnd=*/false);
             if (!S.transitionActive)
                 PushToCore(zoneId, S.typeCode, S.grade);
@@ -558,29 +527,26 @@ namespace
                 S.transitionActive = false;
                 S.typeFlipPending = false;
 
-                // Chain: Thunder Prelude completion → apply original thunders pattern
+                // Chain (IN-DWELL): Thunder Prelude completion → cross-fade to thunders within the same dwell
                 if (S.thunderPreludeActive)
                 {
-                    int post = S.thunderPreludeNextPatIndex;
-                    S.thunderPreludeNextPatIndex = -1;
                     S.thunderPreludeActive = false;
+                    // Cross-fade into thunders with normal transition time; dwellUntil remains unchanged
+                    uint32 transMin = s_transMinSec, transMax = s_transMaxSec;
+                    if (transMax < transMin) std::swap(transMax, transMin);
+                    uint32 transDur = RandomInUInt(transMin, transMax);
 
-                    S.skipThunderPreludeOnce = true;  // avoid re-entering prelude
-                    StartPattern(zoneId, Z, S, post);
-                    S.skipThunderPreludeOnce = false;
-                    return;
-                }
+                    BeginTransition(S, /*toType=*/86u, /*toGrade=*/Clamp01(S.thunderTargetGrade),
+                        /*durSec=*/transDur, /*flipTypeMidway=*/true, /*keepTypeUntilEnd=*/false);
 
-                // Chain: Storm Outro completion → apply intended calmer pattern
-                if (S.stormOutroActive)
-                {
-                    int post = S.stormOutroNextPatIndex;
-                    S.stormOutroNextPatIndex = -1;
-                    S.stormOutroActive = false;
+                    DebugBroadcast(zoneId, "[WeatherVibe] Zone %u prelude complete → cross-fade to thunders over %us",
+                        zoneId, transDur);
 
-                    S.skipStormOutroOnce = true;  // avoid nested outro
-                    StartPattern(zoneId, Z, S, post);
-                    S.skipStormOutroOnce = false;
+                    // If transition duration is zero, we snapped; push now
+                    if (!S.transitionActive)
+                        PushToCore(zoneId, S.typeCode, S.grade);
+
+                    // Do not pick a new pattern; we're still within the same dwell
                     return;
                 }
             }
@@ -592,15 +558,52 @@ namespace
             return;
         }
 
-        // If still within dwell, nothing to change
+        // --- IN-DWELL STORM OUTRO PRIMER ---
+        // If we are still within dwell, prime an outro for storm/thunders if close to the end.
         if (now < S.dwellUntil && S.patternIndex >= 0 && S.patternIndex < static_cast<int>(Z.patterns.size()))
         {
-            // No-op (grade stays at target during dwell)
+            bool canOutroType = (S.typeCode == 3u) || (s_stormOutroIncludeThunders && S.typeCode == 86u);
+            if (canOutroType && !S.stormOutroPrimed)
+            {
+                uint32 maxOutro = RandomInUInt(s_stormOutroDurMin, s_stormOutroDurMax);
+                time_t remaining = S.dwellUntil - now;
+
+                // If we're inside the last 'maxOutro' seconds, start the outro fade *during* dwell
+                if (remaining > 5 && remaining <= static_cast<time_t>(maxOutro))
+                {
+                    // Pre-pick next pattern and ensure it's calmer (not storm/thunders)
+                    int next = PickPattern(zoneId, Z);
+                    if (next >= 0)
+                    {
+                        uint32 nextType = Z.patterns[next].type;
+                        bool calmer = (nextType != 3u && nextType != 86u);
+                        if (calmer)
+                        {
+                            BeginTransition(S, /*toType=*/S.typeCode,
+                                /*toGrade=*/Clamp01(s_stormOutroTarget),
+                                /*durSec=*/static_cast<uint32>(remaining),
+                                /*flipTypeMidway=*/false, /*keepTypeUntilEnd=*/true);
+                            S.stormOutroPrimed = true;
+                            S.stormOutroLockedNext = next;
+                            DebugBroadcast(zoneId, "[WeatherVibe] Zone %u outro (in-dwell) → easing %s to %.2f over %lds",
+                                zoneId, TypeName(S.typeCode), s_stormOutroTarget, long(remaining));
+                        }
+                    }
+                }
+            }
+
+            // Keep dwelling
             return;
         }
 
-        // Dwell elapsed: pick new pattern
-        int next = PickPattern(zoneId, Z);
+        // --- Dwell elapsed: pick (or use locked) next pattern ---
+        int next = (S.stormOutroPrimed && S.stormOutroLockedNext >= 0)
+            ? S.stormOutroLockedNext
+            : PickPattern(zoneId, Z);
+
+        S.stormOutroPrimed = false;
+        S.stormOutroLockedNext = -1;
+
         if (next < 0)
             next = S.patternIndex; // fallback to previous
 
@@ -705,7 +708,7 @@ namespace
         s_debug = sConfigMgr->GetOption<bool>("WeatherVibe.Debug", false);
         s_seasonMode = ParseSeasonMode(sConfigMgr->GetOption<std::string>("WeatherVibe.Seasons", "auto"));
 
-        // Thunder Prelude params (always-on)
+        // Thunder Prelude params (always-on, IN-DWELL)
         s_thPreRainMin = Clamp01(sConfigMgr->GetOption<float>("WeatherVibe.ThunderPrelude.RainIntensity.Min", 0.45f));
         s_thPreRainMax = Clamp01(sConfigMgr->GetOption<float>("WeatherVibe.ThunderPrelude.RainIntensity.Max", 0.80f));
         if (s_thPreRainMax < s_thPreRainMin) std::swap(s_thPreRainMax, s_thPreRainMin);
@@ -714,7 +717,7 @@ namespace
         if (s_thPreDurMax < s_thPreDurMin) std::swap(s_thPreDurMax, s_thPreDurMin);
         s_thPreRaiseIfRaining = sConfigMgr->GetOption<bool>("WeatherVibe.ThunderPrelude.RaiseIfRaining", true);
 
-        // Storm Outro params (always-on)
+        // Storm Outro params (always-on, IN-DWELL)
         s_stormOutroIncludeThunders = sConfigMgr->GetOption<bool>("WeatherVibe.StormOutro.IncludeThunders", true);
         s_stormOutroTarget = Clamp01(sConfigMgr->GetOption<float>("WeatherVibe.StormOutro.TargetGrade", 0.32f));
         s_stormOutroDurMin = sConfigMgr->GetOption<uint32>("WeatherVibe.StormOutro.Duration.Min", 20u);
@@ -767,7 +770,7 @@ namespace
         }
 
         LOG_INFO("server.loading",
-            "[mod_weather_vibe] config loaded: {} zones (interval={}s, transition={}..{}s, jitter={}..{}s, seasonMode={}, debug={}, prelude=on, outro=on).",
+            "[mod_weather_vibe] config loaded: {} zones (interval={}s, transition={}..{}s, jitter={}..{}s, seasonMode={}, debug={}, prelude=in-dwell, outro=in-dwell).",
             s_zoneProfiles.size(), s_interval, s_transMinSec, s_transMaxSec, s_jitterMin, s_jitterMax,
             (s_seasonMode == SeasonMode::Off ? "off" :
                 s_seasonMode == SeasonMode::Auto ? "auto" :
@@ -803,7 +806,7 @@ namespace
                 }
             }
 
-            LOG_INFO("server.loading", "[mod_weather_vibe] initialized (array patterns + dwell + season bias + timed transitions + prelude/outro).");
+            LOG_INFO("server.loading", "[mod_weather_vibe] initialized (array patterns + dwell + season bias + timed transitions + in-dwell prelude/outro).");
         }
 
         void OnAfterConfigLoad(bool /*reload*/) override

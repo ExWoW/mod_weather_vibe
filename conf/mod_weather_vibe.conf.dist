@@ -31,6 +31,7 @@ WeatherVibe.Seasons = "off"
 
 #######################################################################################################
 #  THUNDER PRELUDE — ensure rain builds before thunders (type=86)
+#  the prelude is run within the assiged timeframe (zone weather profile) of the thunder 
 #######################################################################################################
 
 # Lower bound for prelude rain grade [0..1]. Use ≥0.27 to guarantee visible precipitation.
@@ -51,6 +52,7 @@ WeatherVibe.ThunderPrelude.RaiseIfRaining = 1
 
 #######################################################################################################
 #  STORM OUTRO — graceful fade when leaving storm/thunders
+#  the outro is run within the assiged timeframe (zone weather profile) of the storm 
 #######################################################################################################
 
 # Apply the same outro when leaving thunders (86). 1=include, 0=only apply for storm (3).
