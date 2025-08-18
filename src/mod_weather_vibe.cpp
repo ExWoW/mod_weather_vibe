@@ -1,47 +1,40 @@
-﻿/***************************************
- * mod_weather_vibe — GLOBAL environment weather controller (zone-wide)
+/***************************************
+ * mod_weather_vibe
  *
  * CONFIG PER-ZONE ENTRIES (array form):
  *   WeatherVibe.Zone.<ZoneId>[i] = [type, weight, min, max, minMinutes, maxMinutes, "description"]
  *     - type:       0=fine, 1=rain, 2=snow, 3=storm (sand/ash), 86=thunders
- *     - weight:     relative selection weight (0 disables)
+ *     - weight:     relative weight (0 disables)
  *     - min/max:    intensity in [0..1] (match core bands; see below)
  *     - min/maxMinutes: dwell time window for this pattern (real minutes)
  *     - description: free text; used in debug broadcasts
  *
  * CORE WEATHER BANDS (AzerothCore Weather.cpp):
  *   grade < 0.27 => WEATHER_STATE_FINE (even for non-fine types)
- *   0.27–0.39 => LIGHT, 0.40–0.69 => MEDIUM, 0.70–1.00 => HEAVY
+ *   0.27–0.39    => LIGHT
+ *   0.40–0.69    => MEDIUM
+ *   0.70–1.00    => HEAVY
  *   THUNDERS is a discrete state, driven by type=86 (grade still sent).
  *
- * GLOBAL SETTINGS:
+ * GLOBAL SETTINGS (excerpt):
  *   WeatherVibe.Enable = 1/0
  *   WeatherVibe.Interval = <seconds>              // engine tick
- *
- *   # Time (in seconds) to fade between weather patterns. 0 = instant
- *   WeatherVibe.TransitionTime.Min = 60
- *   WeatherVibe.TransitionTime.Max = 120
- *
- *   WeatherVibe.Jitter.Zone.Min = <seconds>       // per-zone extra delay
- *   WeatherVibe.Jitter.Zone.Max = <seconds>
+ *   WeatherVibe.TransitionTime.Min/Max = <seconds>// cross-fade duration
+ *   WeatherVibe.Jitter.Zone.Min/Max = <seconds>   // per-zone extra delay
  *   WeatherVibe.Seasons = "auto"|"off"|"spring"|"summer"|"fall"|"winter"
- *   WeatherVibe.Transition.NotAllowed[n] = [fromType, toType]
- *   WeatherVibe.Debug = 0/1                       // broadcast zone text on apply
+ *   WeatherVibe.Debug = 0/1                       // broadcast brief texts on apply
  *
- * ENGINE BEHAVIOR (this module):
- *   - Keeps a palette of patterns per zone; each application picks one pattern
- *     with season-adjusted weights and (optionally) transition bans.
- *   - On selection, choose a random intensity within [min,max] and a dwell time
- *     in [minMinutes,maxMinutes] plus per-zone jitter (sec).
- *   - When switching patterns, the module cross-fades intensity from the old
- *     grade to the new target grade over TransitionTime (random in Min..Max).
- *     If the type changes (e.g., rain -> fine), we flip the type halfway
- *     through the fade for a natural handoff.
- *   - When dwell elapses, a new pattern is picked (respecting bans).
- *   - On each tick, we only push to the core if type changed, or intensity
- *     changed meaningfully (> epsilon).
- *   - If WeatherVibe.Debug=1, we broadcast a terse text description to players
- *     in the zone at the moment a new pattern is applied.
+ * ALWAYS-ON BEHAVIOR (no enable flags, always active):
+ *   • Thunder Prelude: any transition into type=86 (thunders) first ramps rain (type=1)
+ *     - WeatherVibe.ThunderPrelude.RainIntensity.Min/Max (0..1)
+ *     - WeatherVibe.ThunderPrelude.Duration.Min/Max (seconds)
+ *     - WeatherVibe.ThunderPrelude.RaiseIfRaining (0/1)
+ *   • Storm Outro: when leaving storm (type=3) and (optionally) thunders (86) to a calmer type,
+ *     first fade the current type down before handing off
+ *     - WeatherVibe.StormOutro.IncludeThunders (0/1)
+ *     - WeatherVibe.StormOutro.TargetGrade (0..1)
+ *     - WeatherVibe.StormOutro.Duration.Min/Max (seconds)
+ * 
  ***************************************/
 #include "ScriptMgr.h"
 #include "World.h"
@@ -64,6 +57,7 @@
 #include <ctime>
 #include <sstream>
 #include <cmath>
+#include <cstdarg>
 
 namespace
 {
@@ -103,11 +97,7 @@ namespace
         std::string desc;      // human readable description
 
         bool enabled() const { return weight > 0.0f && mx >= mn + 0.00001f; }
-
-        float clamp(float v) const
-        {
-            return std::min(std::max(v, mn), mx);
-        }
+        float clamp(float v) const { return std::min(std::max(v, mn), mx); }
     };
 
     struct ZoneProfile
@@ -140,21 +130,33 @@ namespace
 
         // --- Transition (time-based cross-fade) ---
         bool   transitionActive = false;
-        time_t transitionStart = 0;       // epoch seconds
-        time_t transitionEnd = 0;       // epoch seconds
-        float  startGrade = 0.0f;    // grade at transition start
-        uint32 nextTypeCode = 0;       // type of the next pattern
-        bool   typeFlipPending = false;   // flip type once we reach 50% progress
+        time_t transitionStart = 0;        // epoch seconds
+        time_t transitionEnd = 0;          // epoch seconds
+        float  startGrade = 0.0f;          // grade at transition start
+        uint32 nextTypeCode = 0;           // type of the next pattern
+        bool   typeFlipPending = false;    // flip type mid-crossfade
+
+        // --- Thunder prelude (always-on; rain ramp before thunder) ---
+        bool   thunderPreludeActive = false;
+        bool   skipThunderPreludeOnce = false;
+        int    thunderPreludeNextPatIndex = -1;
+
+        // --- Storm outro (always-on; fade before leaving storm/thunder) ---
+        bool   stormOutroActive = false;
+        bool   skipStormOutroOnce = false;
+        int    stormOutroNextPatIndex = -1;
     };
 
-    // settings
+    // =========================
+    // Settings / configuration
+    // =========================
     static bool   s_enable = true;
     static uint32 s_interval = 120;        // seconds
     static uint32 s_jitterMin = 1;         // seconds
     static uint32 s_jitterMax = 5;         // seconds
     static bool   s_debug = false;
 
-    // NEW: time-based transition
+    // Time-based transition
     static uint32 s_transMinSec = 0;       // seconds
     static uint32 s_transMaxSec = 0;       // seconds
 
@@ -169,14 +171,27 @@ namespace
         /* Winter */ { 0.70f, 0.50f, 1.50f, 1.20f, 0.70f }
     };
 
-    // Banned direct transitions (fromType, toType)
-    static std::vector<std::pair<uint32, uint32>> s_bannedTransitions;
+    // Thunder Prelude params (always-on)
+    static float  s_thPreRainMin = 0.45f;
+    static float  s_thPreRainMax = 0.80f;
+    static uint32 s_thPreDurMin = 30u;   // seconds
+    static uint32 s_thPreDurMax = 90u;   // seconds
+    static bool   s_thPreRaiseIfRaining = true;
+
+    // Storm Outro params (always-on)
+    static bool   s_stormOutroIncludeThunders = true;
+    static float  s_stormOutroTarget = 0.32f; // 0..1; >0.27 keeps visuals visible
+    static uint32 s_stormOutroDurMin = 20u;
+    static uint32 s_stormOutroDurMax = 60u;
 
     // ZoneId -> profile/state
     static std::unordered_map<uint32, ZoneProfile> s_zoneProfiles;
     static std::unordered_map<uint32, ZoneState>   s_zoneState;
 
-    // RNG
+    // =========================
+    // Utilities / helpers
+    // =========================
+
     static std::mt19937& Rng()
     {
         static std::mt19937 g(static_cast<uint32>(
@@ -199,14 +214,6 @@ namespace
         if (a == b) return a;
         std::uniform_int_distribution<uint32> D(a, b);
         return D(Rng());
-    }
-
-    static bool IsTransitionBanned(uint32 fromType, uint32 toType)
-    {
-        for (auto const& pr : s_bannedTransitions)
-            if (pr.first == fromType && pr.second == toType)
-                return true;
-        return false;
     }
 
     // Compute season index like the core (0=spring,1=summer,2=fall,3=winter)
@@ -257,7 +264,7 @@ namespace
         return nullptr;
     }
 
-    // Push (type,grade) to core + DEBUG BROADCAST HERE
+    // Push (type,grade) to core + debug broadcast
     static void PushToCore(uint32 zoneId, uint32 typeCode, float grade)
     {
         if (Weather* w = GetZoneWeather(zoneId))
@@ -277,8 +284,20 @@ namespace
         }
     }
 
-    // Pick a new pattern for zone, honoring season multipliers and transition bans
-    static int PickPattern(uint32 /*zoneId*/, ZoneProfile const& Z, uint32 fromType)
+    static void DebugBroadcast(uint32 zoneId, char const* fmt, ...)
+    {
+        if (!s_debug) return;
+        char buf[256];
+        va_list ap;
+        va_start(ap, fmt);
+        std::vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        WorldSessionMgr::Instance()->SendZoneText(zoneId, buf);
+        LOG_INFO("weather", "{}", buf);
+    }
+
+    // Weighted random pick (season-biased)
+    static int PickPattern(uint32 /*zoneId*/, ZoneProfile const& Z)
     {
         float total = 0.0f;
         std::vector<float> eff;
@@ -286,15 +305,13 @@ namespace
         for (auto const& p : Z.patterns)
         {
             float w = p.enabled() ? SeasonAdjustedWeight(p) : 0.0f;
-            if (w > 0.0f && IsTransitionBanned(fromType, p.type))
-                w = 0.0f;
             eff.push_back(w);
             total += w;
         }
 
         if (total <= 0.0001f)
         {
-            // fallback: allow anything enabled ignoring bans
+            // fallback: allow anything enabled
             total = 0.0f;
             for (size_t i = 0; i < Z.patterns.size(); ++i)
             {
@@ -330,17 +347,129 @@ namespace
         return RandomInUInt(s_jitterMin, s_jitterMax);
     }
 
+    // =========================
+    // Core engine: transitions
+    // =========================
+
+    static void BeginTransition(ZoneState& S, uint32 toType, float toGrade, uint32 durSec, bool flipTypeMidway, bool keepTypeUntilEnd)
+    {
+        // Configure a time-based cross-fade from current grade/type to target
+        S.startGrade = S.grade;
+        S.targetGrade = Clamp01(toGrade);
+        S.nextTypeCode = toType;
+
+        if (durSec == 0)
+        {
+            // Instant
+            if (!keepTypeUntilEnd) S.typeCode = toType;
+            S.grade = S.targetGrade;
+            S.transitionActive = false;
+            S.typeFlipPending = false;
+        }
+        else
+        {
+            time_t now = GameTime::GetGameTime().count();
+            S.transitionStart = now;
+            S.transitionEnd = now + durSec;
+            S.transitionActive = true;
+            // For our model we flip mid-way unless explicitly asked to keep current type to end
+            S.typeFlipPending = flipTypeMidway && !keepTypeUntilEnd && (toType != S.typeCode);
+        }
+    }
+
     static void StartPattern(uint32 zoneId, ZoneProfile const& Z, ZoneState& S, int patIndex)
     {
         if (patIndex < 0 || patIndex >= static_cast<int>(Z.patterns.size()))
             return;
 
         Pattern const& P = Z.patterns[patIndex];
-
         S.patternIndex = patIndex;
 
-        // Choose a target grade in range
-        float target = RandomIn(P.mn, P.mx);
+        // Resolve global transition duration
+        uint32 transMin = s_transMinSec;
+        uint32 transMax = s_transMaxSec;
+        if (transMax < transMin) std::swap(transMax, transMin);
+        uint32 transDur = RandomInUInt(transMin, transMax);
+
+        time_t now = GameTime::GetGameTime().count();
+
+        // --- Storm Outro (always-on): leaving storm/thunders → calmer type
+        if (S.inited && !S.stormOutroActive && !S.skipStormOutroOnce)
+        {
+            bool leavingStormOrThunder = (S.typeCode == 3u) || (s_stormOutroIncludeThunders && S.typeCode == 86u);
+            bool destinationIsCalmer = (P.type != S.typeCode) && (P.type != 3u) && (P.type != 86u);
+
+            if (leavingStormOrThunder && destinationIsCalmer)
+            {
+                float targetOut = Clamp01(s_stormOutroTarget);
+                if (S.grade > targetOut + 1e-4f)
+                {
+                    uint32 dur = RandomInUInt(s_stormOutroDurMin, s_stormOutroDurMax);
+
+                    S.stormOutroActive = true;
+                    S.stormOutroNextPatIndex = patIndex;
+
+                    // Keep current type; lower grade to targetOut
+                    BeginTransition(S, /*toType=*/S.typeCode, /*toGrade=*/targetOut, /*durSec=*/dur,
+                        /*flipTypeMidway=*/false, /*keepTypeUntilEnd=*/true);
+
+                    // Set dwell & jitter for the outro block
+                    S.dwellUntil = now + dur;
+                    S.nextTickEligible = now + RandomJitterSec();
+
+                    PushToCore(zoneId, S.typeCode, S.grade);
+                    DebugBroadcast(zoneId, "[WeatherVibe] Zone %u outro → easing %s to %.2f over %us",
+                        zoneId, TypeName(S.typeCode), targetOut, dur);
+                    return; // chain to intended pattern when outro ends
+                }
+                // else already low enough; proceed to next type
+            }
+        }
+
+        // --- Thunder Prelude (always-on): entering thunders → rain ramp first
+        if (!S.skipThunderPreludeOnce && P.type == 86u)
+        {
+            bool alreadyRaining = (S.inited && S.typeCode == 1u);
+            float preTarget = Clamp01(RandomIn(s_thPreRainMin, s_thPreRainMax));
+
+            bool needPrelude = !alreadyRaining || (s_thPreRaiseIfRaining && S.grade + 1e-4f < s_thPreRainMin);
+
+            if (needPrelude)
+            {
+                uint32 dur = RandomInUInt(s_thPreDurMin, s_thPreDurMax);
+
+                S.thunderPreludeActive = true;
+                S.thunderPreludeNextPatIndex = patIndex;
+
+                // Transition to RAIN (type 1) at 'preTarget'
+                if (!S.inited)
+                {
+                    S.typeCode = 1u;
+                    S.grade = preTarget;
+                    S.transitionActive = false;
+                    S.typeFlipPending = false;
+                    S.inited = true;
+                    PushToCore(zoneId, S.typeCode, S.grade);
+                }
+                else
+                {
+                    BeginTransition(S, /*toType=*/1u, /*toGrade=*/preTarget, /*durSec=*/dur,
+                        /*flipTypeMidway=*/true, /*keepTypeUntilEnd=*/false);
+                }
+
+                // Dwell & jitter for the prelude
+                S.dwellUntil = now + dur;
+                S.nextTickEligible = now + RandomJitterSec();
+
+                DebugBroadcast(zoneId, "[WeatherVibe] Zone %u prelude → rain ramp before thunders (→%.2f for %us)",
+                    zoneId, preTarget, dur);
+                return; // chain to original thunders after ramp ends
+            }
+            // else already raining strongly; fall through to apply thunders normally
+        }
+
+        // --- Standard pattern application (season-weighted pick already happened)
+        float target = P.clamp(RandomIn(P.mn, P.mx));
 
         uint32 dwellMin = std::max<uint32>(1, P.minMin);
         uint32 dwellMax = std::max<uint32>(dwellMin, P.maxMin);
@@ -348,21 +477,14 @@ namespace
         uint32 dwellMaxSec = dwellMax * 60u;
         uint32 dwellSec = RandomInUInt(dwellMinSec, dwellMaxSec) + RandomJitterSec();
 
-        time_t now = GameTime::GetGameTime().count();
         S.dwellUntil = now + dwellSec;
         S.nextTickEligible = now + RandomJitterSec();
 
-        // --- Transition setup (time-based) ---
-        uint32 transMin = s_transMinSec;
-        uint32 transMax = s_transMaxSec;
-        if (transMax < transMin) std::swap(transMax, transMin);
-        uint32 transDur = RandomInUInt(transMin, transMax);
-
         if (!S.inited)
         {
-            // First-time bootstrap: snap to the selected pattern
+            // First-time bootstrap: snap to selected pattern
             S.typeCode = P.type;
-            S.grade = P.clamp(target);
+            S.grade = target;
             S.targetGrade = S.grade;
             S.transitionActive = false;
             S.typeFlipPending = false;
@@ -371,27 +493,10 @@ namespace
         }
         else
         {
-            // Prepare cross-fade from current to new target
-            S.startGrade = S.grade;
-            S.targetGrade = P.clamp(target);
-            S.nextTypeCode = P.type;
-            S.typeFlipPending = (S.nextTypeCode != S.typeCode);
-
-            if (transDur == 0)
-            {
-                // Instant
-                S.grade = S.targetGrade;
-                S.typeCode = S.nextTypeCode;
-                S.transitionActive = false;
-                S.typeFlipPending = false;
+            BeginTransition(S, /*toType=*/P.type, /*toGrade=*/target, /*durSec=*/transDur,
+                /*flipTypeMidway=*/true, /*keepTypeUntilEnd=*/false);
+            if (!S.transitionActive)
                 PushToCore(zoneId, S.typeCode, S.grade);
-            }
-            else
-            {
-                S.transitionStart = now;
-                S.transitionEnd = now + transDur;
-                S.transitionActive = true;
-            }
         }
     }
 
@@ -419,7 +524,7 @@ namespace
 
         if (!S.inited)
         {
-            int pi = PickPattern(zoneId, Z, /*fromType*/ 0);
+            int pi = PickPattern(zoneId, Z);
             StartPattern(zoneId, Z, S, pi);
             return;
         }
@@ -452,6 +557,32 @@ namespace
                 S.typeCode = S.nextTypeCode;
                 S.transitionActive = false;
                 S.typeFlipPending = false;
+
+                // Chain: Thunder Prelude completion → apply original thunders pattern
+                if (S.thunderPreludeActive)
+                {
+                    int post = S.thunderPreludeNextPatIndex;
+                    S.thunderPreludeNextPatIndex = -1;
+                    S.thunderPreludeActive = false;
+
+                    S.skipThunderPreludeOnce = true;  // avoid re-entering prelude
+                    StartPattern(zoneId, Z, S, post);
+                    S.skipThunderPreludeOnce = false;
+                    return;
+                }
+
+                // Chain: Storm Outro completion → apply intended calmer pattern
+                if (S.stormOutroActive)
+                {
+                    int post = S.stormOutroNextPatIndex;
+                    S.stormOutroNextPatIndex = -1;
+                    S.stormOutroActive = false;
+
+                    S.skipStormOutroOnce = true;  // avoid nested outro
+                    StartPattern(zoneId, Z, S, post);
+                    S.skipStormOutroOnce = false;
+                    return;
+                }
             }
 
             // Push if meaningful change
@@ -468,8 +599,8 @@ namespace
             return;
         }
 
-        // Dwell elapsed: pick new pattern (respect bans)
-        int next = PickPattern(zoneId, Z, /*fromType*/ S.typeCode);
+        // Dwell elapsed: pick new pattern
+        int next = PickPattern(zoneId, Z);
         if (next < 0)
             next = S.patternIndex; // fallback to previous
 
@@ -480,7 +611,9 @@ namespace
             PushToCore(zoneId, S.typeCode, S.grade);
     }
 
-    // --- CONFIG LOADING ---
+    // =========================
+    // Config parsing / loading
+    // =========================
 
     static int ToLower(int c) { return std::tolower(c); }
 
@@ -494,20 +627,6 @@ namespace
         if (s == "fall")   return SeasonMode::Fall;
         if (s == "winter") return SeasonMode::Winter;
         return SeasonMode::Auto;
-    }
-
-    static bool ParseNotAllowed(std::string const& val, uint32& fromT, uint32& toT)
-    {
-        // Expect something like: [2, 1]
-        int a = -1, b = -1;
-        int n = std::sscanf(val.c_str(), " [ %d , %d ] ", &a, &b);
-        if (n == 2 && a >= 0 && b >= 0)
-        {
-            fromT = static_cast<uint32>(a);
-            toT = static_cast<uint32>(b);
-            return true;
-        }
-        return false;
     }
 
     static std::string ExtractQuoted(std::string const& s)
@@ -577,7 +696,7 @@ namespace
         s_enable = sConfigMgr->GetOption<bool>("WeatherVibe.Enable", true);
         s_interval = sConfigMgr->GetOption<uint32>("WeatherVibe.Interval", 120u);
 
-        // NEW: transition time (seconds)
+        // Transition time (seconds)
         s_transMinSec = sConfigMgr->GetOption<uint32>("WeatherVibe.TransitionTime.Min", 0u);
         s_transMaxSec = sConfigMgr->GetOption<uint32>("WeatherVibe.TransitionTime.Max", 0u);
 
@@ -586,18 +705,21 @@ namespace
         s_debug = sConfigMgr->GetOption<bool>("WeatherVibe.Debug", false);
         s_seasonMode = ParseSeasonMode(sConfigMgr->GetOption<std::string>("WeatherVibe.Seasons", "auto"));
 
-        // Transition bans
-        s_bannedTransitions.clear();
-        auto banKeys = sConfigMgr->GetKeysByString("WeatherVibe.Transition.NotAllowed");
-        for (auto const& key : banKeys)
-        {
-            std::string val = sConfigMgr->GetOption<std::string>(key, "");
-            if (val.empty())
-                continue;
-            uint32 a, b;
-            if (ParseNotAllowed(val, a, b))
-                s_bannedTransitions.emplace_back(a, b);
-        }
+        // Thunder Prelude params (always-on)
+        s_thPreRainMin = Clamp01(sConfigMgr->GetOption<float>("WeatherVibe.ThunderPrelude.RainIntensity.Min", 0.45f));
+        s_thPreRainMax = Clamp01(sConfigMgr->GetOption<float>("WeatherVibe.ThunderPrelude.RainIntensity.Max", 0.80f));
+        if (s_thPreRainMax < s_thPreRainMin) std::swap(s_thPreRainMax, s_thPreRainMin);
+        s_thPreDurMin = sConfigMgr->GetOption<uint32>("WeatherVibe.ThunderPrelude.Duration.Min", 30u);
+        s_thPreDurMax = sConfigMgr->GetOption<uint32>("WeatherVibe.ThunderPrelude.Duration.Max", 90u);
+        if (s_thPreDurMax < s_thPreDurMin) std::swap(s_thPreDurMax, s_thPreDurMin);
+        s_thPreRaiseIfRaining = sConfigMgr->GetOption<bool>("WeatherVibe.ThunderPrelude.RaiseIfRaining", true);
+
+        // Storm Outro params (always-on)
+        s_stormOutroIncludeThunders = sConfigMgr->GetOption<bool>("WeatherVibe.StormOutro.IncludeThunders", true);
+        s_stormOutroTarget = Clamp01(sConfigMgr->GetOption<float>("WeatherVibe.StormOutro.TargetGrade", 0.32f));
+        s_stormOutroDurMin = sConfigMgr->GetOption<uint32>("WeatherVibe.StormOutro.Duration.Min", 20u);
+        s_stormOutroDurMax = sConfigMgr->GetOption<uint32>("WeatherVibe.StormOutro.Duration.Max", 60u);
+        if (s_stormOutroDurMax < s_stormOutroDurMin) std::swap(s_stormOutroDurMax, s_stormOutroDurMin);
 
         // Zone patterns
         s_zoneProfiles.clear();
@@ -612,7 +734,6 @@ namespace
             // Expect "WeatherVibe.Zone.<zoneId>[i]"
             size_t posAfterPrefix = prefix.size();
 
-            // find '[' that starts the [i]
             size_t lb = key.find('[', posAfterPrefix);
             size_t rb = (lb != std::string::npos) ? key.find(']', lb) : std::string::npos;
             if (lb == std::string::npos || rb == std::string::npos || rb <= lb + 1)
@@ -646,7 +767,7 @@ namespace
         }
 
         LOG_INFO("server.loading",
-            "[mod_weather_vibe] config loaded: {} zones (interval={}s, transition={}..{}s, jitter={}..{}s, seasonMode={}, debug={}).",
+            "[mod_weather_vibe] config loaded: {} zones (interval={}s, transition={}..{}s, jitter={}..{}s, seasonMode={}, debug={}, prelude=on, outro=on).",
             s_zoneProfiles.size(), s_interval, s_transMinSec, s_transMaxSec, s_jitterMin, s_jitterMax,
             (s_seasonMode == SeasonMode::Off ? "off" :
                 s_seasonMode == SeasonMode::Auto ? "auto" :
@@ -655,6 +776,10 @@ namespace
                 s_seasonMode == SeasonMode::Fall ? "fall" : "winter"),
             s_debug);
     }
+
+    // =========================
+    // World script integration
+    // =========================
 
     class ModWeatherVibeWorldScript : public WorldScript
     {
@@ -673,12 +798,12 @@ namespace
                 ZoneState& S = s_zoneState[zoneId];
                 if (!Z.empty())
                 {
-                    int pi = PickPattern(zoneId, Z, /*fromType*/ 0);
+                    int pi = PickPattern(zoneId, Z);
                     StartPattern(zoneId, Z, S, pi);
                 }
             }
 
-            LOG_INFO("server.loading", "[mod_weather_vibe] initialized (array patterns + dwell + season bias + timed transitions).");
+            LOG_INFO("server.loading", "[mod_weather_vibe] initialized (array patterns + dwell + season bias + timed transitions + prelude/outro).");
         }
 
         void OnAfterConfigLoad(bool /*reload*/) override

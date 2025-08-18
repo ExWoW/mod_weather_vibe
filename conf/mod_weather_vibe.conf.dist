@@ -1,9 +1,13 @@
-#######################################################################
+#######################################################################################################
 #  mod_weather_vibe
-#######################################################################
+#######################################################################################################
 
 # mod toggle
 WeatherVibe.Enable = 1
+
+# When enabled (1), broadcast the applied weather pattern to all players,
+# using the per-entry description string appended below.
+WeatherVibe.Debug = 1
 
 # How often to evaluate weather evolution (seconds)
 # Should be smaller then the lowest minMinutes in zones configuration.
@@ -12,10 +16,6 @@ WeatherVibe.Interval = 30
 # Time (in seconds) to fade between weather patterns. 0 = instant
 WeatherVibe.TransitionTime.Min = 30
 WeatherVibe.TransitionTime.Max = 90
-
-# One or more disallowed direct transitions
-# Example: disallow snow -> rain (helps avoid jarring swaps near freezing)
-WeatherVibe.Transition.NotAllowed[0] = [2, 1]
 
 # Interval per zone is randomized on every cycle (seconds).
 # Also prevents all zones changing at the same time.
@@ -28,14 +28,47 @@ WeatherVibe.Jitter.Zone.Max = 5
 # NOT TESTED, RECOMMAND TO KEEP IT OFF FOR NOW 
 WeatherVibe.Seasons = "off"
 
-# When enabled (1), broadcast the applied weather pattern to all players,
-# using the per-entry description string appended below.
-WeatherVibe.Debug = 1
+
+#######################################################################################################
+#  THUNDER PRELUDE — ensure rain builds before thunders (type=86)
+#######################################################################################################
+
+# Lower bound for prelude rain grade [0..1]. Use ≥0.27 to guarantee visible precipitation.
+WeatherVibe.ThunderPrelude.RainIntensity.Min = 0.45
+
+# Upper bound for prelude rain grade [0..1]. A random target in [Min..Max] is chosen.
+WeatherVibe.ThunderPrelude.RainIntensity.Max = 0.80
+
+# Minimum duration (seconds) of the rain ramp before switching to thunders.
+WeatherVibe.ThunderPrelude.Duration.Min = 30
+
+# Maximum duration (seconds) of the rain ramp (randomized per activation).
+WeatherVibe.ThunderPrelude.Duration.Max = 90
+
+# If already raining but grade < RainIntensity.Min, ramp up anyway (1). If 0, skip prelude when raining.
+WeatherVibe.ThunderPrelude.RaiseIfRaining = 1
 
 
-##############################
+#######################################################################################################
+#  STORM OUTRO — graceful fade when leaving storm/thunders
+#######################################################################################################
+
+# Apply the same outro when leaving thunders (86). 1=include, 0=only apply for storm (3).
+WeatherVibe.StormOutro.IncludeThunders = 1
+
+# Grade to fade down to during the outro [0..1]. Values just above 0.27 keep a faint visual until hand-off.
+WeatherVibe.StormOutro.TargetGrade = 0.32
+
+# Minimum outro fade duration (seconds).
+WeatherVibe.StormOutro.Duration.Min = 20
+
+# Maximum outro fade duration (seconds), randomized per activation.
+WeatherVibe.StormOutro.Duration.Max = 60
+
+
+#######################################################################################################
 # Zones weather profiles
-#
+#######################################################################################################
 # type:
 #   0 = fine
 #   1 = rain
@@ -54,7 +87,7 @@ WeatherVibe.Debug = 1
 #
 # Format:
 # WeatherVibe.Zone.<ZoneId>[i] = [type, weight, minIntensity, maxIntensity, minMinutes, maxMinutes, "description"]
-##############################
+#######################################################################################################
 
 #--------------------------
 # NORTHREND (Map 571)
