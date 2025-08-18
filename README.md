@@ -16,7 +16,7 @@ TODO:
 - Adding weather fronts moving through entire world
 - Adding and testing zones which are normally locked for weather changes
 - ~~Adding creating dynamic weather patterns between two defined weather patters.~~
-- [Optimize performance] do not update weather when there are no players/real players in the zone
+- [Optimize performance] Investigate pro and cons not updating weather when there are no players/real players in the zone
 
 You can enable all zones by running the scripts mentioned below, they are part of the default config but i havent 
 test them yet. There is enable script which adds the missing zones, and disable which deletes the zones we just
