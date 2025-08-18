@@ -70,6 +70,8 @@ mysql> SELECT zone FROM game_weather
 4080  Isle of Quel'Danas
 ```
 
+Restart server after applying a script (or after copy/paste and executing in the mysql terminal):
+
 SQL ENABLE weather effects for all zones script
 [SQL_ENABLE_ALL_ZONES_FOR_WEATHER.sql](https://github.com/hermensbas/mod_weather_vibe/blob/main/SQL_ENABLE_ALL_ZONES_FOR_WEATHER.sql)
 
