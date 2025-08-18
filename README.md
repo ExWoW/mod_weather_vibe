@@ -31,6 +31,14 @@ Nevertheless the default configuration contains all weather profiles all zones, 
   <img src="./example_with_debug.png">
 </p>
 
+<p align="center">
+  <img src="./fjord.png">
+</p>
+
+<p align="center">
+  <img src="./wintergrap.png">
+</p>
+
 ## Enable weather for all zones
 
 Default zones
