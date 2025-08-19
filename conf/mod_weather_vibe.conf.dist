@@ -83,42 +83,60 @@ WeatherVibe.Season.Winter.Thunders.Mul  = 0.70
 
 
 #######################################################################################################
-#  THUNDER PRELUDE — ensure rain builds before thunders (type=86)
-#  the prelude is run within the assiged timeframe (zone weather profile) of the thunder 
+#  THUNDER fade-in: ensure rain builds before thunders (type=86)
+#  the fade-in is run within the assiged timeframe (zone weather profile) of the thunder 
 #######################################################################################################
 
-# Lower bound for prelude rain grade [0..1]. Use ≥0.27 to guarantee visible precipitation.
-WeatherVibe.ThunderPrelude.RainIntensity.Min = 0.45
+# Lower bound for FadeIn rain grade [0..1]. Use ≥0.27 to guarantee visible precipitation.
+WeatherVibe.Thunders.FadeIn.RainIntensity.Min = 0.45
 
-# Upper bound for prelude rain grade [0..1]. A random target in [Min..Max] is chosen.
-WeatherVibe.ThunderPrelude.RainIntensity.Max = 0.80
+# Upper bound for FadeIn rain grade [0..1]. A random target in [Min..Max] is chosen.
+WeatherVibe.Thunders.FadeIn.RainIntensity.Max = 0.80
 
-# Minimum duration (seconds) of the rain ramp before switching to thunders.
-WeatherVibe.ThunderPrelude.Duration.Min = 30
+# Minimum FadeIn duration (seconds)
+WeatherVibe.Thunders.FadeIn.Duration.Min = 30
 
-# Maximum duration (seconds) of the rain ramp (randomized per activation).
-WeatherVibe.ThunderPrelude.Duration.Max = 90
+# Maximum FadeIn duration (seconds) 
+WeatherVibe.Thunders.FadeIn.Duration.Max = 90
 
-# If already raining but grade < RainIntensity.Min, ramp up anyway (1). If 0, skip prelude when raining.
-WeatherVibe.ThunderPrelude.RaiseIfRaining = 1
+# If already raining but grade < RainIntensity.Min, ramp up anyway (1). If 0, skip FadeIn when raining.
+WeatherVibe.Thunders.FadeIn.RaiseIfRaining = 1
 
 
 #######################################################################################################
-#  STORM OUTRO — graceful fade when leaving storm/thunders
-#  the outro is run within the assiged timeframe (zone weather profile) of the storm 
+#  STORM fade-in: graceful fade into storm
+#  the fade-in is run within the assiged timeframe (zone weather profile) of the storm 
 #######################################################################################################
 
-# Apply the same outro when leaving thunders (86). 1=include, 0=only apply for storm (3).
-WeatherVibe.StormOutro.IncludeThunders = 1
+# 0.55 means 55% of the desired intensity
+WeatherVibe.Storm.FadeIn.PreTarget.Fraction.Min = 0.30
 
-# Grade to fade down to during the outro [0..1]. Values just above 0.27 keep a faint visual until hand-off.
-WeatherVibe.StormOutro.TargetGrade = 0.32
+#0.85 means 85% of the desired intensity
+WeatherVibe.Storm.FadeIn.PreTarget.Fraction.Max = 0.55
 
-# Minimum outro fade duration (seconds).
-WeatherVibe.StormOutro.Duration.Min = 20
+# Minimum FadeIn duration (seconds)
+WeatherVibe.Storm.FadeIn.Duration.Min = 15
 
-# Maximum outro fade duration (seconds), randomized per activation.
-WeatherVibe.StormOutro.Duration.Max = 60
+# Maximum FadeIn duration (seconds) 
+WeatherVibe.Storm.FadeIn.Duration.Max = 45
+
+
+#######################################################################################################
+#  STORM fade-out: graceful fade when leaving storm/thunders
+#  the fade-out is run within the assiged timeframe (zone weather profile) of the storm 
+#######################################################################################################
+
+# Apply the same FadeOut when leaving thunders (86). 1=include, 0=only apply for storm (3).
+WeatherVibe.Storm.FadeOut.IncludeThunders = 1
+
+# Grade to fade down to during the FadeOut [0..1]. Values just above 0.27 keep a faint visual until hand-off.
+WeatherVibe.Storm.FadeOut.TargetGrade = 0.27
+
+# Minimum FadeOut duration (seconds).
+WeatherVibe.Storm.FadeOut.Duration.Min = 20
+
+# Maximum FadeOut duration (seconds), randomized per activation.
+WeatherVibe.Storm.FadeOut.Duration.Max = 60
 
 
 #######################################################################################################
