@@ -7,7 +7,7 @@ WeatherVibe.Enable = 1
 
 # When enabled (1), broadcast the applied weather pattern to all players,
 # using the per-entry description string appended below.
-WeatherVibe.Debug = 1
+WeatherVibe.Debug = 0
 
 # How often to evaluate weather evolution (seconds)
 # Should be smaller then the lowest minMinutes in zones configuration.
