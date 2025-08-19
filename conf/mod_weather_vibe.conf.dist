@@ -130,7 +130,7 @@ WeatherVibe.Storm.FadeIn.Duration.Max = 45
 WeatherVibe.Storm.FadeOut.IncludeThunders = 1
 
 # Grade to fade down to during the FadeOut [0..1]. Values just above 0.27 keep a faint visual until hand-off.
-WeatherVibe.Storm.FadeOut.TargetGrade = 0.27
+WeatherVibe.Storm.FadeOut.TargetGrade = 0.32
 
 # Minimum FadeOut duration (seconds).
 WeatherVibe.Storm.FadeOut.Duration.Min = 20
