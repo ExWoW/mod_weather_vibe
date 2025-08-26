@@ -108,10 +108,10 @@ WeatherVibe.Auto.Enable       = 1
 WeatherVibe.Auto.TickMs       = 10000
 
 # min seconds a picked state should live before new pick
-WeatherVibe.Auto.MinWindowSec = 180
+WeatherVibe.Auto.MinWindowSec = 120
 
 # max seconds a picked state should live
-WeatherVibe.Auto.MaxWindowSec = 480
+WeatherVibe.Auto.MaxWindowSec = 300
 
 # seconds to ramp toward target each change
 WeatherVibe.Auto.TweenSec     = 90
