@@ -1,324 +1,323 @@
-﻿# AzerothCore Module: Weather Vibe 
-
-(**Work In Progess**)
-(DEBUG by default enabled for now, you can simply disable by updating the conf file)
-
+# WeatherVibe (AzerothCore module)
 
 Bring your world to life with **mod_weather_vibe**. This module gives each zone a
 distinct **mood**—misty mornings in Elwynn, a **gloomy** Duskwood that rumbles to life,
 **biting** Wintergrasp squalls, and **rolling thunderheads** over Stranglethorn. Weather
 no longer just _flips_; it **evolves** naturally over time with small shifts,
 occasional bursts, and regional spillovers that make the world feel **alive** and
-**immersive**. 
+**immersive**.
 
-TODO: 
-- Extending logic or eventually even adding dynamic weather models
-- Adding weather fronts moving through entire world
-- Adding and testing zones which are normally locked for weather changes
-- ~~Adding creating dynamic weather patterns between two defined weather patters.~~
-- [Optimize performance] Investigate pro and cons not updating weather when there are no players/real players in the zone
+- Per-state **intensity bands** (maps % → raw grade) with 0% = fully clear for **FINE**.
+- **Auto-rotation engine**: picks states by profile weights, holds them for a window, and smoothly tweens intensities.
+- **Zone parenting** (optional): capitals/starter zones can inherit a parent zone’s weather.
+- **Sprinkle**: temporary overrides (e.g., “snow 40% for 30s”).
+- Rich admin commands: `.wvibe set`, `.wvibe setRaw`, `.wvibe auto ...`, `.wvibe show`, `.wvibe reload`.
 
-You can enable all zones by running the scripts mentioned below, they are part of the default config but i havent 
-test them yet. There is enable script which adds the missing zones, and disable which deletes the zones we just
-added. 
+> ✅ **Important:** In your core config set `ActivateWeather = 0`.  
+> That disables the default `WeatherMgr` so it won’t fight WeatherVibe’s packets.
 
-Nevertheless the default configuration contains all weather profiles all zones, default and none defaults.
+---
 
+## Contents
 
-### Examples
+- [Features](#features)
+- [Installation](#installation)
+- [Configuration](#configuration)
+  - [Core toggles & debug](#core-toggles--debug)
+  - [Season & Dayparts](#season--dayparts)
+  - [Intensity ranges (InternalRange)](#intensity-ranges-internalrange)
+  - [Auto engine](#auto-engine)
+  - [Profiles](#profiles)
+  - [Zone → Profile mapping](#zone--profile-mapping)
+- [Commands](#commands)
+  - [Direct set](#direct-set)
+  - [Auto engine controls](#auto-engine-controls)
+  - [Inspect & reload](#inspect--reload)
+- [Examples](#examples)
+- [How percentages map to visuals](#how-percentages-map-to-visuals)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
-[Youtube video](https://youtu.be/6yOxS6jF-3M)
+---
 
-<p align="center">
-  <img src="./example_with_debug.png">
-</p>
+## Features
 
-<p align="center">
-  <img src="./fjord.png">
-</p>
+- **Packet mode**: Sends `WorldPackets::Misc::Weather` directly to zones (and optional children).
+- **Per-state intensity bands**: You define min/max raw grade per state and daypart.  
+  Effects are usually **visible from ~0.30** (except **Fine** which is visible from **0.00**).
+- **Profiles**: Weighted state selection + percent bands (Min/Max %) for how strong the effect should be.
+- **Auto engine**: Rotates states per zone, holds them for a random window (within your min/max), and tweens.
+- **Sprinkle**: Temporary override of state/percent for a duration without altering the profile.
+- **Day/Season aware**: Your InternalRange bands can vary by daypart.
 
-<p align="center">
-  <img src="./ashenvale.png">
-</p>
-
-<p align="center">
-  <img src="./wintergrasp.png">
-</p>
-
-## Enable weather for all zones
-
-Default zones
-```sql
-mysql> SELECT zone FROM game_weather
-35 rows in set (0.00 sec)
-```
-
-```yamel
-1     Dun Morogh
-3     Badlands
-10    Duskwood
-11    Wetlands
-12    Elwynn Forest
-15    Dustwallow Marsh
-28    Western Plaguelands
-33    Stranglethorn Vale
-36    Alterac Mountains
-38    Loch Modan
-41    Deadwind Pass
-44    Redridge Mountains
-45    Arathi Highlands
-47    The Hinterlands
-85    Tirisfal Glades
-139   Eastern Plaguelands
-141   Teldrassil
-148   Darkshore
-215   Mulgore
-267   Hillsbrad Foothills
-357   Feralas
-405   Desolace
-440   Tanaris
-490   Un'Goro Crater
-618   Winterspring
-796   Scarlet Monastery
-1377  Silithus
-1977  Zul'Gurub
-2017  Stratholme
-2597  Alterac Valley
-3358  Arathi Basin
-3428  Temple of Ahn'Qiraj
-3429  Ruins of Ahn'Qiraj
-3521  Zangarmarsh
-4080  Isle of Quel'Danas
-```
-
-Restart server after applying a script (or after copy/paste and executing in the mysql terminal):
-
-SQL ENABLE weather effects for all zones script
-[SQL_ENABLE_ALL_ZONES_FOR_WEATHER.sql](https://github.com/hermensbas/mod_weather_vibe/blob/main/SQL_ENABLE_ALL_ZONES_FOR_WEATHER.sql)
-
-SQL DISABLE newly added zoned, back to defaults
-[SQL_DISABLE_ALL_ZONES_FOR_WEATHER.sql](https://github.com/hermensbas/mod_weather_vibe/blob/main/SQL_DISABLE_ALL_ZONES_FOR_WEATHER.sql)
+---
 
 ## Installation
 
-1. **Clone the module**
+1. Place the module in your AzerothCore `modules` folder, e.g.:
+   ```
+   azerothcore/modules/mod-weather-vibe/
+   ```
+2. Reconfigure & build AzerothCore:
+   ```bash
+   cmake .. -DCMAKE_BUILD_TYPE=Release
+   make -j"$(nproc)"
+   ```
+3. Ensure your worldserver config includes:
+   ```ini
+   ActivateWeather = 0
+   ```
+4. Add the WeatherVibe config keys (see below) to your server `.conf`, then start `worldserver`.
 
-```bash
-    cd /path/to/azerothcore/modules
-    git clone https://github.com/<your-org>/mod-weather-vibe.git
-```
-   
-3. **Rebuild**
+---
 
-```bash
-    cd /path/to/azerothcore
-    mkdir -p build && cd build
-    cmake ..
-    make -j"$(nproc)"
-```
+## Configuration
 
-4. **Install config**
+Copy these into your server config and adjust as needed.
 
-```bash
-    cp /path/to/azerothcore/modules/mod-weather-vibe/conf/mod_weather_vibe.conf.dist \
-       /path/to/azerothcore/modules/mod-weather-vibe/conf/mod_weather_vibe.conf
-```
+### Core toggles & debug
 
-5. **Modidfy your worldserver.conf**
-To prevent the core Weather from constantly overwriting this module’s applied patterns, **set a large core interval**:
-```bash
-    # worldserver.conf
-    ChangeWeatherInterval = 600000
-```
+```ini
+# Enable/disable the module
+WeatherVibe.Enable = 1
 
-6. **Restart**
-```bash
-    ./worldserver
+# Broadcast debug info to the zone whenever weather is pushed (optional)
+WeatherVibe.Debug = 0
 ```
 
+### Season & Dayparts
 
-## Overview
+```ini
+# Force a season or let the module compute it by date
+WeatherVibe.Season = auto                 # auto|spring|summer|autumn|winter
 
-**What you configure per zone:** a list of 4–10 small **patterns**:
-- **type**: fine/rain/snow/storm/thunders (0/1/2/3/86)
-- **intensity range**: `minIntensity..maxIntensity` (0.0–1.0)
-- **dwell time**: `minMinutes..maxMinutes`
-- **description**: shown to players if debug is enabled
+# Force a daypart or let the module compute it by clock and daypart starts
+WeatherVibe.DayPart.Mode = auto           # auto|morning|afternoon|evening|night
 
-**What the mod does:**
-- Picks a pattern with weighted (and season-biased) selection.
-- Chooses a random target grade in the pattern’s range and **eases** toward it.
-- Holds until the dwell window elapses, then picks another (respecting transition bans).
-- Adds **jitter** per zone so updates aren’t synchronized.
----
+# Daypart start times (HH:MM)
+WeatherVibe.DayPart.MORNING.Start   = 06:00
+WeatherVibe.DayPart.AFTERNOON.Start = 12:00
+WeatherVibe.DayPart.EVENING.Start   = 18:00
+WeatherVibe.DayPart.NIGHT.Start     = 22:00
+```
 
-## Core Weather Mapping (AzerothCore)
+### Intensity ranges (InternalRange)
 
-Intensity (“grade”) is mapped by the core as:
+These ranges map a **logical percentage (0–100%)** to a **raw grade (0.0–1.0)** per **daypart** and **weather state**.  
+As a rule of thumb, visuals generally appear from **~0.30**, except **Fine** which is visible from **0.00**.
 
-- `< 0.27` → **FINE** *(even if type ≠ fine; avoid such ranges for non-fine types)*
-- `0.27–0.39` → **LIGHT**
-- `0.40–0.69` → **MEDIUM**
-- `0.70–1.00` → **HEAVY**
+**Format (per state per daypart):**
+```ini
+WeatherVibe.Intensity.InternalRange.<DAYPART>.<StateName> = <minRaw>, <maxRaw>
+```
 
-**Types:**  
-`0=fine, 1=rain, 2=snow, 3=storm (sand/ash/blizzard), 86=thunders`
+**Suggested baseline (keep caps below ~0.65 for routine play):**
+```ini
+# Fine may be truly clear at 0.00
+WeatherVibe.Intensity.InternalRange.MORNING.Fine   = 0.00, 1.00
+WeatherVibe.Intensity.InternalRange.AFTERNOON.Fine = 0.00, 1.00
+WeatherVibe.Intensity.InternalRange.EVENING.Fine   = 0.00, 1.00
+WeatherVibe.Intensity.InternalRange.NIGHT.Fine     = 0.00, 1.00
 
----
+# Typical non-fine bands (visuals from ~0.30)
+WeatherVibe.Intensity.InternalRange.MORNING.LightSnow     = 0.30, 1.00
+WeatherVibe.Intensity.InternalRange.AFTERNOON.LightSnow   = 0.30, 1.00
+# ...repeat for other states (Fog, Light/Medium/Heavy Rain/Snow, Sandstorm, Thunders)
+```
 
-## Configuration (Global)
+**Supported states:**  
+`Fine (0)`, `Fog (1)`, `LightRain (3)`, `MediumRain (4)`, `HeavyRain (5)`,  
+`LightSnow (6)`, `MediumSnow (7)`, `HeavySnow (8)`,  
+`LightSandstorm (22)`, `MediumSandstorm (41)`, `HeavySandstorm (42)`,  
+`Thunders (86)`.
 
-Create/edit `mod_weather_vibe.conf`.  
-Use **ini** syntax; comments start with `#`.
+> Note: `BlackRain`/`BlackSnow` are not used.
 
-    #######################################################################
-    #  mod_weather_vibe — GLOBAL environment weather controller (zone-wide)
-    #
-    #  CONFIG PER-ZONE ENTRIES (array form):
-    #    WeatherVibe.Zone.<ZoneId>[i] = [type, weight, minIntensity, maxIntensity, minMinutes, maxMinutes, "description"]
-    #
-    #      type:            0=fine, 1=rain, 2=snow, 3=storm (sand/ash/blizzard), 86=thunders
-    #      weight:          relative selection weight (0 disables this pattern)
-    #      min/maxIntensity: 0.00–1.00; pick ≥0.27 for visible non-fine effects
-    #      min/maxMinutes:   dwell time window for the pattern (minutes, min ≤ max)
-    #      "description":    free text shown if WeatherVibe.Debug=1 (quotes required)
-    #
-    #  CORE WEATHER BANDS (AzerothCore intensity → state)
-    #      < 0.27    → FINE           (even if type ≠ fine)
-    #      0.27–0.39 → LIGHT
-    #      0.40–0.69 → MEDIUM
-    #      0.70–1.00 → HEAVY
-    #######################################################################
-    
-    # --- Global toggles & cadence ---
-    WeatherVibe.Enable = 1
-    WeatherVibe.Interval = 120             # engine tick cadence (seconds)
-    
-    # --- Transitions & biasing ---
-    # 0.0 = off (instant jumps), 1.0 = smoothest possible transitions
-    WeatherVibe.Transition.Smoothness = 0.50
-    
-    # Seasons: "auto" | "off" | "spring" | "summer" | "fall" | "winter"
-    WeatherVibe.Seasons = "auto"
-    
-    # Broadcast pattern apply messages to players in-zone
-    WeatherVibe.Debug = 0
-    
-    # Forbid direct transitions (add more indices as needed)
-    # Example: disallow snow → rain
-    WeatherVibe.Transition.NotAllowed[0] = [2, 1]
-    
-    # Per-zone desynchronization jitter (seconds) to prevent mass flips
-    WeatherVibe.Jitter.Zone.Min = 1
-    WeatherVibe.Jitter.Zone.Max = 5
+### Auto engine
 
----
+```ini
+# Master switch for auto rotation
+WeatherVibe.Auto.Enable       = 0
 
-## Configuration (Per Zone)
+# Engine tick granularity (ms)
+WeatherVibe.Auto.TickMs       = 1000
 
-Each zone defines one or more patterns. Typical zones use **4–10**.
+# A picked state lives within this window before a new pick (seconds)
+WeatherVibe.Auto.MinWindowSec = 180
+WeatherVibe.Auto.MaxWindowSec = 480
 
-**Format**
+# Seconds to smoothly ramp intensity on changes
+WeatherVibe.Auto.TweenSec     = 90
 
-    # <Zone Name> — vibe note
-    WeatherVibe.Zone.<ZoneId>[i] = [type, weight, minIntensity, maxIntensity, minMinutes, maxMinutes, "description"]
+# If the computed raw grade changes by less than this, skip sending (anti-spam)
+WeatherVibe.Auto.TinyNudge    = 0.01
 
-**Example — Elwynn Forest (12):**
+```
 
-    # Elwynn Forest — green & mild; passing showers
-    WeatherVibe.Zone.12[0] = [0, 0.60, 0.05, 0.22, 2, 4, "fine — bright breaks"]
-    WeatherVibe.Zone.12[1] = [0, 0.10, 0.15, 0.26, 1, 3, "fine — hazy/overcast window"]
-    WeatherVibe.Zone.12[2] = [1, 0.18, 0.30, 0.55, 2, 5, "rain — showery light/med"]
-    WeatherVibe.Zone.12[3] = [3, 0.08, 0.28, 0.60, 2, 4, "storm — gusty squalls"]
-    WeatherVibe.Zone.12[4] = [86,0.04, 0.35, 0.70, 1, 2, "thunders — brief rumbles"]
+**What these mean (quick guide):**
+- **Enable**: Turns auto on/off globally.
+- **TickMs**: How often the engine processes/tweens and possibly sends packets.
+- **Min/MaxWindowSec**: Each pick is held for a random time in this range.
+- **TweenSec**: Duration of cross-fade toward the next target.
+- **TinyNudge**: Ignore very small raw changes to avoid chatty updates.
 
-**Example — Force perpetual snow (Dun Morogh, 1):**
+### Profiles
 
-    # Dun Morogh — force perpetual snow; floor at light (≥ 0.27)
-    WeatherVibe.Zone.1[0] = [2, 0.44, 0.28, 0.39, 2, 5, "snow — light flurries (baseline)"]
-    WeatherVibe.Zone.1[1] = [2, 0.28, 0.38, 0.55, 2, 5, "snow — steady light/medium"]
-    WeatherVibe.Zone.1[2] = [2, 0.14, 0.55, 0.69, 2, 4, "snow — moderate"]
-    WeatherVibe.Zone.1[3] = [2, 0.08, 0.70, 0.85, 1, 3, "snow — heavy bursts"]
-    WeatherVibe.Zone.1[4] = [2, 0.06, 0.85, 1.00, 1, 2, "snow — near-blizzard"]
+Define one or more named climate profiles, each with **state weights** and a **percent band**.
 
----
+```ini
+# Declare profile names (comma-separated)
+WeatherVibe.Profile.Names = Temperate,Tundra,Desert
 
-## Global Settings Reference
+# Weights: <stateId>=<weight> pairs (states missing or weight=0 won't be picked)
+WeatherVibe.Profile.Tundra.Weights = 0=35,1=8,3=8,4=6,5=3,6=15,7=15,8=5,22=0,41=0,42=0,86=5
 
-| Setting                                | Description                                                                                | Default | Valid Values |
-|----------------------------------------|--------------------------------------------------------------------------------------------|---------|--------------|
-| `WeatherVibe.Enable`                   | Master switch.                                                                             | `1`     | `0` / `1`    |
-| `WeatherVibe.Interval`                 | Engine tick cadence in seconds.                                                            | `120`   | ≥ 1          |
-| `WeatherVibe.Transition.Smoothness`    | Intensity easing factor; 0.0 instant, 1.0 smoothest.                                       | `0.50`  | `0.0–1.0`    |
-| `WeatherVibe.Seasons`                  | Season bias: `"auto"`, `"off"`, `"spring"`, `"summer"`, `"fall"`, `"winter"`.              | `"auto"`| string       |
-| `WeatherVibe.Debug`                    | Broadcast debug messages to players in-zone on pattern apply.                              | `0`     | `0` / `1`    |
-| `WeatherVibe.Transition.NotAllowed[n]` | Disallow direct transition: `[fromType, toType]`.                                          | —       | arrays       |
-| `WeatherVibe.Jitter.Zone.Min`          | Per-zone random offset minimum (seconds) added to dwell/tick.                              | `1`     | ≥ 0          |
-| `WeatherVibe.Jitter.Zone.Max`          | Per-zone random offset maximum (seconds).                                                  | `5`     | ≥ min        |
+# Percent band used when the profile picks a target (logical %, later mapped via InternalRange)
+WeatherVibe.Profile.Tundra.Percent.Min = 5
+WeatherVibe.Profile.Tundra.Percent.Max = 60
+```
+
+**Notes:**
+- The engine picks a **state** by discrete distribution of weights.
+- It then picks a **percent** uniformly in `[Min, Max]`, which will be mapped to a **raw grade** using your `InternalRange` for the **current daypart** and **state**.
+
+### Zone → Profile mapping
+
+Assign which **controller** zones the auto engine will drive and with which profile.  
+(Children can inherit via zone parenting—see next section.)
+
+```ini
+WeatherVibe.ZoneProfile.Map = 1=Temperate,3=Temperate,8=Tundra,10=Desert
+```
+
+- Key: `ZoneID`
+- Value: `ProfileName` (must exist in `Profile.Names`)
+- If the mapped profile is missing, **DefaultProfile** will be used (if configured).
+
+On each push, packets are sent to the **controller** and all of its **children**.
 
 ---
 
-## Design Tips
+## Commands
 
-- **Make effects visible:** For non-fine types, set `minIntensity ≥ 0.30`. Core treats `< 0.27` as fine.
-- **Dwell windows:** 1–5 min feels natural; use shorter during testing.
-- **Weights:** Zero disables; seasonal bias multiplies weight but does not resurrect zero.
-- **Transitions:** Add bans for immersion (e.g., `[2,1]` snow→rain).
-- **Seasons:** Force `"winter"` or `"summer"` to stress-test vibes.
+> All commands require GM **SEC_ADMINISTRATOR** and can be used from console (`Console::Yes`).
+
+### Direct set
+
+```
+.wvibe set <zoneId> <state:uint> <percentage:0..100>
+```
+- Picks a state and **logical percentage**, which is mapped to raw using `InternalRange` for the **current daypart**.
+- Example:
+  - `.wvibe set 1 6 40` → Zone 1, `LightSnow (6)`, 40% (mapped to raw via current daypart’s `LightSnow` range).
+
+```
+.wvibe setRaw <zoneId> <state:uint> <raw:0..1>
+```
+- Sends the **raw grade** directly (bypasses percentage mapping).  
+- Example: `.wvibe setRaw 1 6 0.55`
+
+### Auto engine controls
+
+```
+.wvibe auto on
+.wvibe auto off
+```
+Enable/disable the global auto engine.
+
+```
+.wvibe auto status
+```
+Shows engine settings and per-zone state/targets, remaining window/tween times, and sprinkle status.
+
+```
+.wvibe auto set <zoneId> <profileName|default>
+```
+Enable auto control for a zone with the given profile.  
+Use `default` to apply `WeatherVibe.Auto.DefaultProfile`.
+
+```
+.wvibe auto clear <zoneId>
+```
+Disable auto control for a zone.
+
+```
+.wvibe auto sprinkle <zoneId> <state|auto> <percentage:0..100> <durationSec>
+```
+Apply a temporary override (e.g., “snow 50% for 30s”).  
+Use `auto` to keep the current state but force a percent spike.
+
+### Inspect & reload
+
+```
+.wvibe show
+```
+Lists last applied weather for each controller zone, reporting both **raw** and **mapped %** under the **current daypart**.
+
+```
+.wvibe reload
+```
+Reloads dayparts, ranges, profiles, zone parents, and auto config.
 
 ---
 
-## Debugging
+## Examples
 
-Enable zone broadcasts:
+**Always-snowing tundra zone:**
+```ini
+# Make Tundra favor snow heavily
+WeatherVibe.Profile.Tundra.Weights = 0=10,6=40,7=35,8=15,86=5
 
-    WeatherVibe.Debug = 1
+# Stronger snow band
+WeatherVibe.Profile.Tundra.Percent.Min = 25
+WeatherVibe.Profile.Tundra.Percent.Max = 60
 
-You’ll see messages like:
+# Map the zone and enable auto
+WeatherVibe.ZoneProfile.Map = 8=Tundra
+WeatherVibe.Auto.Enable = 1
+```
 
-    [WeatherVibe] Zone 1: snow — steady light/medium (grade 0.42, ~3m)
+**Manual sprinkle for a short blizzard:**
+```
+.wvibe auto sprinkle 8 8 60 30
+```
+Zone `8`, `HeavySnow (8)`, 60% for 30 seconds.
 
-Faster testing:
+---
 
-    WeatherVibe.Interval = 10
-    # And use 1–2 minute dwell windows in your patterns
+## How percentages map to visuals
 
-If logs say `config loaded: 0 zones`, your keys are wrong.  
-Correct shape is: `WeatherVibe.Zone.<ZoneId>[i] = [ ... ]` (digits until `[` are parsed as the zone id).
+1. You (or the auto engine) produce a **logical %** in `[0..100]`.
+2. WeatherVibe converts `%` → `raw` using **InternalRange** for the **current daypart** and **state**:
+   ```
+   raw = min + (%/100) * (max - min)
+   ```
+3. That `raw` is clamped safely for the engine (0 is allowed for **Fine** to be perfectly clear).
+4. The packet is sent to all players in the controller zone (and optional children).
 
-If visuals don’t change:
-- The zone may not support weather (DBC).
-- Your non-fine intensities might be `< 0.27` (renders as fine).
-- You’re still within the dwell window; shorten min/max minutes.
+> Tip: If weather looks too weak/strong at a given %, narrow or shift the `InternalRange` for that state/daypart.
+
+---
+
+## Troubleshooting
+
+- **Weather stops after a few seconds**  
+  - Confirm `ActivateWeather = 0` in the core config (prevents `WeatherMgr` from overwriting).
+  - If using **auto**, check `.wvibe auto status`:
+    - Ensure the **profile weights** don’t heavily favor `Fine (0)` if you expect constant snow/rain.
+    - Increase `WeatherVibe.Auto.MinWindowSec` / `MaxWindowSec` if states change too quickly.
+  - Verify your **InternalRange** caps: a very low `max` can make effects appear to “vanish”.
+- **`.wvibe set` looks different from `.wvibe setRaw`**  
+  `.wvibe set` passes through **percentage mapping** (depends on your `InternalRange` and daypart).  
+  `.wvibe setRaw` applies the raw grade directly (no mapping). Align your `InternalRange` with expectations.
+- **No changes when sending tiny tweaks**  
+  Increase or reduce `WeatherVibe.Auto.TinyNudge` (anti-spam threshold in raw grade space).
+- **Profile missing on startup / zone mapping uses unknown profile**  
+  Set `WeatherVibe.Auto.DefaultProfile = <ExistingProfileName>` and/or use `.wvibe auto set <zone> default`.
 
 ---
 
 ## License
 
-This module is released under the **GNU AGPL v3**, consistent with AzerothCore.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+This module follows the same license policy as your AzerothCore distribution unless stated otherwise in the repository.  
+Contributions welcome—profiles and zone mappings are great PRs!
