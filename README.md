@@ -1,7 +1,4 @@
-# WeatherVibe (AzerothCore module)
-
-- Only added Dun Morogh weather profile, it takes alot of time creating a balance weather pattern per map
-  still the general feel and vibe for the mod starting with Dun Morogh
+# WeatherVibe (AzerothCore module) (beta version)
 
 Bring your world to life with **mod_weather_vibe**. This module gives each zone a
 distinct **mood**—misty mornings in Elwynn, a **gloomy** Duskwood that rumbles to life,
