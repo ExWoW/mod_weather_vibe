@@ -16,6 +16,12 @@ occasional bursts, and regional spillovers that make the world feel **alive** an
 > ✅ **Important:** In your core config set `ActivateWeather = 0`.  
 > That disables the default `WeatherMgr` so it won’t fight WeatherVibe’s packets.
 
+
+TODO:
+- Seasonal weight; prolly on global level to keep simple to configure.
+- Profiles details, dayparts for example.
+- Profile zone tweaking
+
 ---
 
 ## Contents
