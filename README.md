@@ -1,5 +1,7 @@
 # WeatherVibe (AzerothCore module) (beta version)
 
+https://youtu.be/4CxG-eAT9D4
+
 Bring your world to life with **mod_weather_vibe**. This module gives each zone a
 distinct **mood**—misty mornings in Elwynn, a **gloomy** Duskwood that rumbles to life,
 **biting** Wintergrasp squalls, and **rolling thunderheads** over Stranglethorn. Weather
