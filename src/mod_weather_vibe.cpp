@@ -515,7 +515,7 @@ static uint32 ResolveControllerZone(uint32 zoneId)
 // ======================================
 // Applies weather to a zone (returns true only when actually delivered to at least one player).
 // ======================================
-static bool PushWeatherToCore(uint32 zoneIdRaw, WeatherState state, float rawGrade)
+static bool PushWeatherToClient(uint32 zoneIdRaw, WeatherState state, float rawGrade)
 {
     uint32 zoneId = ResolveControllerZone(zoneIdRaw);
     float normalizedGrade = ClampToCoreBounds(rawGrade, state);
@@ -537,7 +537,7 @@ static bool PushWeatherToCore(uint32 zoneIdRaw, WeatherState state, float rawGra
         Season s = GetCurrentSeason();
         DayPart d = GetCurrentDayPart();
         std::ostringstream zmsg;
-        zmsg << "WeatherVibe [DEBUG] season: " << SeasonName(s)
+        zmsg << "|cff00ff00WeatherVibe:|r [DEBUG] season: " << SeasonName(s)
             << " | day: " << DayPartName(d)
             << " | state: " << WeatherStateName(state)
             << " | grade: " << std::fixed << std::setprecision(2) << normalizedGrade
@@ -553,7 +553,7 @@ static bool PushWeatherToCore(uint32 zoneIdRaw, WeatherState state, float rawGra
 }
 
 // Re-send last-applied weather for a zone (login/zone-change helper)
-static void ResendLastForZone(uint32 zoneIdRaw, WorldSession* session)
+static void PushLastAppliedWeatherToClient(uint32 zoneIdRaw, WorldSession* session)
 {
     uint32 zoneId = ResolveControllerZone(zoneIdRaw);
     auto it = g_LastApplied.find(zoneId);
@@ -824,7 +824,7 @@ static void ApplyAutoTick(uint32 diffMs)
         bool stateChanged = (outState != az.lastStateSent);
         if (stateChanged || delta >= g_TinyNudge)
         {
-            bool delivered = PushWeatherToCore(controllerZone, outState, norm);
+            bool delivered = PushWeatherToClient(controllerZone, outState, norm);
             (void)delivered; // used only in debug text
             az.lastRawSent = norm;
             az.lastStateSent = outState;
@@ -840,12 +840,12 @@ static bool HandleCommandPercent(ChatHandler* handler, uint32 zoneId, uint32 sta
 {
     if (!g_EnableModule)
     {
-        handler->SendSysMessage("WeatherVibe module is disabled in config.");
+        handler->SendSysMessage("|cff00ff00WeatherVibe:|r module is disabled in config.");
         return false;
     }
     if (!IsValidWeatherState(stateVal))
     {
-        handler->SendSysMessage("WeatherVibe: Invalid state. Examples: 0=Fine, 1=Fog, 3=LightRain, 4=MediumRain, 5=HeavyRain, 6=LightSnow, 7=MediumSnow, 8=HeavySnow, 22=LightSandstorm, 41=MediumSandstorm, 42=HeavySandstorm, 86=Thunders.");
+        handler->SendSysMessage("|cff00ff00WeatherVibe:|r Invalid state. Examples: 0=Fine, 1=Fog, 3=LightRain, 4=MediumRain, 5=HeavyRain, 6=LightSnow, 7=MediumSnow, 8=HeavySnow, 22=LightSandstorm, 41=MediumSandstorm, 42=HeavySandstorm, 86=Thunders.");
         handler->SendSysMessage("Usage: .wvibe set <zoneId> <state:uint> <percentage:0..100>");
         return false;
     }
@@ -854,7 +854,7 @@ static bool HandleCommandPercent(ChatHandler* handler, uint32 zoneId, uint32 sta
     DayPart dp = GetCurrentDayPart();
     float raw = MapPercentToRawGrade(dp, static_cast<WeatherState>(stateVal), pct01);
 
-    bool ok = PushWeatherToCore(zoneId, (WeatherState)stateVal, raw);
+    bool ok = PushWeatherToClient(zoneId, (WeatherState)stateVal, raw);
     SyncAutoWithManual(zoneId, (WeatherState)stateVal, raw);
     return ok;
 }
@@ -864,17 +864,17 @@ static bool HandleCommandRaw(ChatHandler* handler, uint32 zoneId, uint32 stateVa
 {
     if (!g_EnableModule)
     {
-        handler->SendSysMessage("WeatherVibe module is disabled in config.");
+        handler->SendSysMessage("|cff00ff00WeatherVibe:|r module is disabled in config.");
         return false;
     }
     if (!IsValidWeatherState(stateVal))
     {
-        handler->SendSysMessage("WeatherVibe: Invalid state. Usage: .wvibe setRaw <zoneId> <state:uint> <raw:0..1>");
+        handler->SendSysMessage("|cff00ff00WeatherVibe:|r Invalid state. Usage: .wvibe setRaw <zoneId> <state:uint> <raw:0..1>");
         return false;
     }
 
     float raw = std::clamp(grade, 0.0f, 1.0f);
-    bool ok = PushWeatherToCore(zoneId, (WeatherState)stateVal, raw);
+    bool ok = PushWeatherToClient(zoneId, (WeatherState)stateVal, raw);
     SyncAutoWithManual(zoneId, (WeatherState)stateVal, raw);
     return ok;
 }
@@ -883,14 +883,14 @@ static bool HandleCommandRaw(ChatHandler* handler, uint32 zoneId, uint32 stateVa
 static bool HandleAutoOn(ChatHandler* handler)
 {
     g_AutoEnabled = true;
-    handler->SendSysMessage("WeatherVibe auto engine: ON");
+    handler->SendSysMessage("|cff00ff00WeatherVibe:|r auto engine: ON");
     return true;
 }
 
 static bool HandleAutoOff(ChatHandler* handler)
 {
     g_AutoEnabled = false;
-    handler->SendSysMessage("WeatherVibe auto engine: OFF");
+    handler->SendSysMessage("|cff00ff00WeatherVibe:|r auto engine: OFF");
     return true;
 }
 
@@ -905,7 +905,7 @@ static bool HandleAutoStatus(ChatHandler* handler)
     for (auto const& kv : g_AutoZones)
     {
         uint32 z = kv.first; AutoZone const& az = kv.second;
-        oss << "zone " << z << " enabled=" << (az.enabled ? "1" : "0")
+        oss << "Zone " << z << " enabled=" << (az.enabled ? "1" : "0")
             << " profile=" << az.profile
             << " cur=" << WeatherStateName(az.curState) << ":" << (int)std::round(az.curPct)
             << "% tgt=" << WeatherStateName(az.tgtState) << ":" << (int)std::round(az.tgtPct)
@@ -926,7 +926,7 @@ static bool HandleAutoSet(ChatHandler* handler, uint32 zoneId, std::string profi
 
     if (!g_Profiles.count(key))
     {
-        handler->PSendSysMessage("Unknown profile '%s'", profileName.c_str());
+        handler->PSendSysMessage("|cff00ff00WeatherVibe:|r Unknown profile '%s'", profileName.c_str());
         return false;
     }
 
@@ -935,7 +935,7 @@ static bool HandleAutoSet(ChatHandler* handler, uint32 zoneId, std::string profi
     az.enabled = true;
     az.profile = key;
     az.windowRemainMs = 0; // force a fresh pick
-    handler->PSendSysMessage("Zone %u is now auto-controlled by profile '%s' (controller=%u)", zoneId, profileName.c_str(), controller);
+    handler->PSendSysMessage("|cff00ff00WeatherVibe:|r Zone %u is now auto-controlled by profile '%s' (controller=%u)", zoneId, profileName.c_str(), controller);
     return true;
 }
 
@@ -946,10 +946,10 @@ static bool HandleAutoClear(ChatHandler* handler, uint32 zoneId)
     if (it != g_AutoZones.end())
     {
         it->second.enabled = false;
-        handler->PSendSysMessage("Zone %u auto control disabled (controller=%u)", zoneId, controller);
+        handler->PSendSysMessage("|cff00ff00WeatherVibe:|r Zone %u auto control disabled (controller=%u)", zoneId, controller);
         return true;
     }
-    handler->PSendSysMessage("Zone %u has no auto control", zoneId);
+    handler->PSendSysMessage("|cff00ff00WeatherVibe:|r Zone %u has no auto control", zoneId);
     return false;
 }
 
@@ -961,7 +961,7 @@ static bool HandleAutoSprinkle(ChatHandler* handler, uint32 zoneId, std::string 
     auto it = g_AutoZones.find(controller);
     if (it == g_AutoZones.end())
     {
-        handler->PSendSysMessage("Zone %u is not under auto control; use .wvibe auto set <zone> <profile> first.", zoneId);
+        handler->PSendSysMessage("|cff00ff00WeatherVibe:|r Zone %u is not under auto control; use .wvibe auto set <zone> <profile> first.", zoneId);
         return false;
     }
 
@@ -988,7 +988,7 @@ static bool HandleAutoSprinkle(ChatHandler* handler, uint32 zoneId, std::string 
     az.sprinkle.pct = percentage;
     az.sprinkle.remainMs = durationSec * 1000u;
 
-    handler->PSendSysMessage("Sprinkle applied to zone %u (controller=%u): %s %.0f%% for %u sec", zoneId, controller, WeatherStateName(s), percentage, durationSec);
+    handler->PSendSysMessage("|cff00ff00WeatherVibe:|r Sprinkle applied to zone %u (controller=%u): %s %.0f%% for %u sec", zoneId, controller, WeatherStateName(s), percentage, durationSec);
     return true;
 }
 
@@ -1001,7 +1001,7 @@ public:
     {
         if (!g_EnableModule)
         {
-            handler->SendSysMessage("WeatherVibe is disabled (WeatherVibe.Enable = 0).");
+            handler->SendSysMessage("|cff00ff00WeatherVibe:|r is disabled (WeatherVibe.Enable = 0).");
             return false;
         }
 
@@ -1011,7 +1011,7 @@ public:
         LoadAutoConfig();
         InitializeAutoZonesFromConfig();
 
-        handler->SendSysMessage("WeatherVibe reloaded (ranges/dayparts/parents/profiles/auto).");
+        handler->SendSysMessage("|cff00ff00WeatherVibe:|r reloaded (ranges/dayparts/parents/profiles/auto).");
         return true;
     }
 
@@ -1019,13 +1019,13 @@ public:
     {
         if (!g_EnableModule)
         {
-            handler->SendSysMessage("WeatherVibe is disabled (WeatherVibe.Enable = 0).");
+            handler->SendSysMessage("|cff00ff00WeatherVibe:|r is disabled (WeatherVibe.Enable = 0).");
             return false;
         }
 
         if (g_LastApplied.empty())
         {
-            handler->SendSysMessage("No last-applied weather recorded yet. Use .wvibe set or setRaw to push weather.");
+            handler->SendSysMessage("|cff00ff00WeatherVibe:|r No last-applied weather recorded yet. Use .wvibe set or setRaw to push weather.");
             return true;
         }
 
@@ -1033,7 +1033,7 @@ public:
         DayPart d = GetCurrentDayPart();
 
         std::ostringstream oss;
-        oss << "WeatherVibe show | season=" << SeasonName(s) << " daypart=" << DayPartName(d) << "\n";
+        oss << "|cff00ff00WeatherVibe:|r show | season=" << SeasonName(s) << " daypart=" << DayPartName(d) << "\n";
 
         for (auto const& kv : g_LastApplied)
         {
@@ -1103,14 +1103,14 @@ public:
          if (!g_EnableModule) 
             return;
         
-        ChatHandler(player->GetSession()).SendSysMessage("WeatherVibe enabled.");
+        ChatHandler(player->GetSession()).SendSysMessage("|cff00ff00WeatherVibe:|r enabled.");
         uint32 controller = ResolveControllerZone(player->GetZoneId());
         if (auto it = g_AutoZones.find(controller); it != g_AutoZones.end() && it->second.enabled)
         {
             SeedAutoFromLastApplied(controller, it->second);
         }
         
-        ResendLastForZone(player->GetZoneId(), player->GetSession());
+        PushLastAppliedWeatherToClient(player->GetZoneId(), player->GetSession());
     }
 
     void OnPlayerUpdateZone(Player* player, uint32 newZone, uint32 /*newArea*/) override
@@ -1124,7 +1124,7 @@ public:
             SeedAutoFromLastApplied(controller, it->second);
         }
         
-        ResendLastForZone(newZone, player->GetSession());
+        PushLastAppliedWeatherToClient(newZone, player->GetSession());
     }
 };
 
