@@ -1091,41 +1091,45 @@ public:
 };
 
 // ==========================
-// Player sync
+// Player hooks
 // ==========================
 class WeatherVibe_PlayerScript : public PlayerScript
 {
 public:
     WeatherVibe_PlayerScript() : PlayerScript("WeatherVibe_PlayerScript") {}
 
-    void OnLogin(Player* player)
+    void OnPlayerLogin(Player* player) override
     {
-        if (g_EnableModule)
+         if (!g_EnableModule) 
+            return;
+        
+        ChatHandler(player->GetSession()).SendSysMessage("WeatherVibe enabled.");
+        uint32 controller = ResolveControllerZone(player->GetZoneId());
+        if (auto it = g_AutoZones.find(controller); it != g_AutoZones.end() && it->second.enabled)
         {
-            ChatHandler(player->GetSession()).SendSysMessage("WeatherVibe enabled.");
-            uint32 controller = ResolveControllerZone(player->GetZoneId());
-            if (auto it = g_AutoZones.find(controller); it != g_AutoZones.end() && it->second.enabled)
-            {
-                SeedAutoFromLastApplied(controller, it->second);
-            }
-            ResendLastForZone(player->GetZoneId(), player->GetSession());
+            SeedAutoFromLastApplied(controller, it->second);
         }
+        
+        ResendLastForZone(player->GetZoneId(), player->GetSession());
     }
 
-    void OnUpdateZone(Player* player, uint32 newZone, uint32 /*newArea*/)
+    void OnPlayerUpdateZone(Player* player, uint32 newZone, uint32 /*newArea*/) override
     {
-        if (!g_EnableModule) return;
+        if (!g_EnableModule) 
+            return;
+        
         uint32 controller = ResolveControllerZone(newZone);
         if (auto it = g_AutoZones.find(controller); it != g_AutoZones.end() && it->second.enabled)
         {
             SeedAutoFromLastApplied(controller, it->second);
         }
+        
         ResendLastForZone(newZone, player->GetSession());
     }
 };
 
 // ==========================
-// World ticking
+// World hooks
 // ==========================
 class WeatherVibe_WorldScript : public WorldScript
 {
