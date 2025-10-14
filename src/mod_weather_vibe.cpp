@@ -553,7 +553,7 @@ static bool PushWeatherToClient(uint32 zoneIdRaw, WeatherState state, float rawG
 }
 
 // Re-send last-applied weather for a zone (login/zone-change helper)
-static void PushLastAppliedWeatherToClient(uint32 zoneIdRaw, WorldSession* session)
+static void PushLastAppliedWeatherToClient(uint32 zoneIdRaw, Player* player)
 {
     uint32 zoneId = ResolveControllerZone(zoneIdRaw);
     auto it = g_LastApplied.find(zoneId);
@@ -561,7 +561,7 @@ static void PushLastAppliedWeatherToClient(uint32 zoneIdRaw, WorldSession* sessi
         return;
 
     WorldPackets::Misc::Weather weatherPackage(it->second.state, it->second.grade);
-    session->SendPacket(weatherPackage.Write());
+    player->SendDirectMessage(weatherPackage.Write());
 }
 
 static void SeedAutoFromLastApplied(uint32 controllerZone, AutoZone& az)
@@ -1110,7 +1110,7 @@ public:
             SeedAutoFromLastApplied(controller, it->second);
         }
         
-        PushLastAppliedWeatherToClient(player->GetZoneId(), player->GetSession());
+        PushLastAppliedWeatherToClient(player->GetZoneId(), player);
     }
 
     void OnPlayerUpdateZone(Player* player, uint32 newZone, uint32 /*newArea*/) override
@@ -1124,7 +1124,7 @@ public:
             SeedAutoFromLastApplied(controller, it->second);
         }
         
-        PushLastAppliedWeatherToClient(newZone, player->GetSession());
+        PushLastAppliedWeatherToClient(newZone, player);
     }
 };
 
